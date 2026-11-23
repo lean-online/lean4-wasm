@@ -1,0 +1,10 @@
+node_modules
+dist
+work
+coverage
+package-lock.json
+pnpm-lock.yaml
+public/wasm-lean4
+scripts/assets
+*.md
+config/lean4-runtime.json

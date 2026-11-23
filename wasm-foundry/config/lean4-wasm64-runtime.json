@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "experimental": true,
+  "arch": "wasm64",
+  "leanVersion": "4.36.0-rc2",
+  "cacheKey": "w64-8205512c",
+  "runtime": "Lean 4.36.0-rc2 Init (wasm64 experimental)",
+  "bucket": "lean4-ide-releases",
+  "primary": {
+    "label": "Pages Functions (R2)",
+    "baseUrl": "/cdn/"
+  },
+  "fallback": {
+    "label": "GitHub release",
+    "baseUrl": "https://github.com/lean-online/lean-init-ide/releases/download/runtime-v4.36.0-rc2-wasm64/"
+  },
+  "mirror": {
+    "label": "魔搭镜像（国内）",
+    "baseUrl": "https://modelscope.cn/datasets/HQZMSu/lean4-assets/resolve/master/",
+    "prefix": "wasm-lean4/4.36.0-rc2-wasm64"
+  },
+  "assets": [
+    {
+      "name": "lean-lsp-adapted.mjs",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-lsp-adapted.mjs",
+      "source": "lean-lsp-adapted.mjs",
+      "bytes": 111484,
+      "sha256": "146cbeba24309cd8574e6e15132d24675f2f41ab03f34e601ee75f8a6f083716",
+      "contentType": "text/javascript"
+    },
+    {
+      "name": "lean-lsp.wasm.zst",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-lsp.wasm.zst",
+      "source": "lean-lsp.wasm.zst",
+      "bytes": 11373279,
+      "sha256": "5b0d646fb075fb05ad7bd96e17d30a695cd54190ab13f557df4a611d3770ec4b",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 119432545,
+      "uncompressedSha256": "59eb0ea1e76b14737bcca478122dfa5b1a61c8894ce60de853543fcaa58bbf22"
+    },
+    {
+      "name": "lean-init-64.index.json",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64.index.json",
+      "source": "lean-init-64.index.json",
+      "bytes": 212599,
+      "sha256": "85a119b2d89662e57663a54e733c872b6e9298918dcc769996314de71df0c30b",
+      "contentType": "application/json"
+    },
+    {
+      "name": "lean-init-64-00.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-00.pack.zst.bin",
+      "source": "lean-init-64-00.pack.zst.bin",
+      "bytes": 12893887,
+      "sha256": "de7e9b40feba17a1a173bbdb35c63672493a0715fc95b19111b60581530905bb",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "10f37d84fd48962e5fd65de5d2e16311ee46941bd49ba83b92192fc48a617de8"
+    },
+    {
+      "name": "lean-init-64-01.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-01.pack.zst.bin",
+      "source": "lean-init-64-01.pack.zst.bin",
+      "bytes": 13305692,
+      "sha256": "106db2acbcda087016073f2730e4845bed8e2b397262eb281bb212099cf7adb0",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "245eba26705bb5d6a4d9c5713ec5e5630f931b2f8bcf33786f5690d4545ad753"
+    },
+    {
+      "name": "lean-init-64-02.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-02.pack.zst.bin",
+      "source": "lean-init-64-02.pack.zst.bin",
+      "bytes": 13189492,
+      "sha256": "acddd0207486eee57145e028787cd9873d871a53c3af274847ed04cdaa0d36c4",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "5a72a1b88081944354afe53409d92662417d6fa768f2e31b0d1ab6712b164d64"
+    },
+    {
+      "name": "lean-init-64-03.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-03.pack.zst.bin",
+      "source": "lean-init-64-03.pack.zst.bin",
+      "bytes": 13375652,
+      "sha256": "c29c5e9566e61badab59c443f4c65522bc586f9a8dae95b0400ca105e52ed36b",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "b99c10df67a74a89e01b08c5d62efb5912990dba7d05dec63c282737c433f34d"
+    },
+    {
+      "name": "lean-init-64-04.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-04.pack.zst.bin",
+      "source": "lean-init-64-04.pack.zst.bin",
+      "bytes": 12041204,
+      "sha256": "94a2a4380f383f675b06de1a3a486584936091c1cecb74e80372f6921ee7cfff",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "f12caf517ffce7c5e58a6c2cc47597c25480dd714e57abbd8a7a0e97a9eb959d"
+    },
+    {
+      "name": "lean-init-64-05.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-05.pack.zst.bin",
+      "source": "lean-init-64-05.pack.zst.bin",
+      "bytes": 12017532,
+      "sha256": "027a311ce2c930e91b5d2ac1f84ecb7fcbb242feb29d8d7cc1870902adc548c7",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "616fbc47911b3c3f31b58230ee3d090687e07bb851da7041dc6cdaddd09ef6da"
+    },
+    {
+      "name": "lean-init-64-06.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-06.pack.zst.bin",
+      "source": "lean-init-64-06.pack.zst.bin",
+      "bytes": 12634656,
+      "sha256": "b6923936977c98a5b159630f10b57fb678fb07af3842bb5b035c3d7c7d6745fc",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 50331648,
+      "uncompressedSha256": "755398d7e612ddb4234a458475d7bb259cccc21eb5cb79498d101821ce7f5be3"
+    },
+    {
+      "name": "lean-init-64-07.pack.zst.bin",
+      "key": "wasm-lean4/4.36.0-rc2-wasm64/lean-init-64-07.pack.zst.bin",
+      "source": "lean-init-64-07.pack.zst.bin",
+      "bytes": 7279703,
+      "sha256": "56601eb4a3629e6d6593241f938ff952e29fe9b85b43defeae67536e4054c5e9",
+      "contentType": "application/octet-stream",
+      "ranged": true,
+      "encoding": "zstd",
+      "uncompressedBytes": 34769971,
+      "uncompressedSha256": "2f1058659fdee83575d878fa6f80b5c3fdaeb1807426e56ae7f3566fde3b8f4a"
+    }
+  ]
+}

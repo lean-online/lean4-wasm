@@ -1,0 +1,36 @@
+{
+  "name": "lean4-wasm-foundry",
+  "private": true,
+  "type": "module",
+  "license": "(Apache-2.0 OR MulanPSL-2.0)",
+  "description": "Lean 4 WebAssembly (wasm32 & experimental wasm64) runtime builder, stack patches, differential equivalence gates, and R2/ModelScope publisher.",
+  "packageManager": "pnpm@12.18.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:cpp": "bash scripts/check-cpp.sh",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "verify:manifest": "node scripts/verify-manifest.mjs",
+    "fetch:assets": "node scripts/fetch-assets.mjs",
+    "upload:assets": "node scripts/upload-assets.mjs",
+    "upload:modelscope": "node scripts/upload-modelscope.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "@vitest/coverage-v8": "^5.1.0",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "playwright-core": "^1.65.1",
+    "prettier": "^3.10.1",
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.73.0",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,8 +1,18 @@
 version: 2
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: 'npm'
+    directory: '/wasm-foundry'
     schedule:
-      interval: "monthly"
-    commit-message:
-      prefix: "chore: CI"
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: '@types/node'
+        versions: ['>=25.0.0']
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
