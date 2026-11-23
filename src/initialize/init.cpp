@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstdlib>
 /*
 Copyright (c) 2014 Microsoft Corporation. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
@@ -84,7 +86,9 @@ static void initialize_impl(bool minimal) {
        previous stage when `prefer_native` is set. Of the three, only `Init` is referenced from C++
        directly (37 symbols across 7 modules); `Std` is referenced by none, and stays for the
        run-time reachability reason below. */
+    if (std::getenv("LEAN_WASM_TRACE")) { fprintf(stderr, "info: [init] Init start\n"); fflush(stderr); }
     consume_io_result(initialize_Init(builtin));
+    if (std::getenv("LEAN_WASM_TRACE")) { fprintf(stderr, "info: [init] Std start\n"); fflush(stderr); }
     consume_io_result(initialize_Std(builtin));
 #ifdef LEAN_MINIMAL_CORE_INIT
     (void)minimal;
@@ -108,6 +112,7 @@ static void initialize_impl(bool minimal) {
            As almost all binaries shipped with Lean link against `libleanshared`, there is no advantage
            for them of resolving the above issues to allow for leaner linking and so we make an
            exception only for the separately linked, never-elaborating paranoid build as above. */
+        if (std::getenv("LEAN_WASM_TRACE")) { fprintf(stderr, "info: [init] Lean start\n"); fflush(stderr); }
         consume_io_result(initialize_Lean(builtin));
     }
 #endif

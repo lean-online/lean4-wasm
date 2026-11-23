@@ -1587,7 +1587,11 @@ extern "C" LEAN_EXPORT obj_res lean_io_wait_any(b_obj_arg task_list) {
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_exit(uint8_t code) {
+#ifdef LEAN_EMSCRIPTEN
+    throw lean::wasm_exit_exception(code);
+#else
     exit(code);
+#endif
 }
 
 extern "C" LEAN_EXPORT obj_res lean_io_force_exit(uint8_t code) {

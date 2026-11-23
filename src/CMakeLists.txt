@@ -78,6 +78,7 @@ option(STRIP_BINARIES "Strip produced binaries" ON)
 
 # When ON we include githash in the version string
 option(USE_GITHASH "GIT_HASH" ON)
+set(LEAN_GITHASH_OVERRIDE "" CACHE STRING "Override embedded githash for ABI-compatible soft forks")
 # When ON we install LICENSE files to CMAKE_INSTALL_PREFIX
 option(INSTALL_LICENSE "INSTALL_LICENSE" ON)
 # When ON we install a copy of cadical
@@ -166,7 +167,7 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
 
   # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
   # > The simple and safe thing is to pass all -s flags at both compile and link time.
-  set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
+  set(EMSCRIPTEN_SETTINGS "-sMEMORY64=1 -s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
   string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread")
   string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
   string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS}")
@@ -721,7 +722,10 @@ endif()
 file(WRITE "${CMAKE_BINARY_DIR}/lake-githash" "${LAKE_LEAN_GITHASH}")
 
 # Git HASH
-if(USE_GITHASH)
+if(NOT "${LEAN_GITHASH_OVERRIDE}" STREQUAL "")
+  set(GIT_SHA1 "${LEAN_GITHASH_OVERRIDE}")
+  message(STATUS "git commit sha1 (override): ${GIT_SHA1}")
+elseif(USE_GITHASH)
   include(GetGitRevisionDescription)
   get_git_head_revision(GIT_REFSPEC GIT_SHA1 ALLOW_LOOKING_ABOVE_CMAKE_SOURCE_DIR)
   if(GIT_SHA1 MATCHES "GITDIR-NOTFOUND")

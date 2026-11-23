@@ -485,14 +485,22 @@ extern "C" LEAN_EXPORT object * lean_compacted_region_read(b_obj_arg ofname, b_o
         }
         if (read_size != sizeof(header)
             || memcmp(header.marker, default_header.marker, sizeof(header.marker)) != 0) {
-            return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', invalid header").str());
+            {
+                auto msg = (sstream() << "failed to read file '" << olean_fn << "', invalid header").str();
+                lean_trace_write("olean", msg.c_str());
+                return io_result_mk_error(msg);
+            }
         }
         if ((header.version != 2 && header.version != 3) || header.flags != default_header.flags
 #ifdef LEAN_CHECK_OLEAN_VERSION
             || strncmp(header.githash, LEAN_GITHASH, sizeof(header.githash)) != 0
 #endif
         ) {
-            return io_result_mk_error((sstream() << "failed to read file '" << olean_fn << "', incompatible header").str());
+            {
+                auto msg = (sstream() << "failed to read file '" << olean_fn << "', incompatible header (version=" << int(header.version) << ", flags=" << int(header.flags) << ", githash=" << std::string(header.githash, strnlen(header.githash, sizeof(header.githash))).c_str() << ")").str();
+                lean_trace_write("olean", msg.c_str());
+                return io_result_mk_error(msg);
+            }
         }
         char * base_addr = reinterpret_cast<char *>(header.base_addr);
 

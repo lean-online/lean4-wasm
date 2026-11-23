@@ -48,6 +48,7 @@ Author: Leonardo de Moura
 #if defined(LEAN_EMSCRIPTEN)
 #include <emscripten.h>
 #endif
+#include <cstdio>
 #include "githash.h" // NOLINT
 
 #ifdef LEAN_WINDOWS
@@ -287,7 +288,19 @@ static void report_task_get_blocked_time(std::chrono::nanoseconds d) {
     }
 }
 
+
+static void lean_wasm_report_exception(char const * type, char const * msg) {
+    std::fprintf(stderr, "[LEAN_WASM_ERR] {\"type\":\"%s\",\"msg\":\"", type);
+    for (char const * p = msg; p && *p; ++p) {
+        unsigned char c = (unsigned char)*p;
+        std::fputc((c == '"' || c == '\\' || c < 0x20) ? '\'' : (char)c, stderr);
+    }
+    std::fprintf(stderr, "\"}\n");
+    std::fflush(stderr);
+}
+
 extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
+    try {
 #ifdef LEAN_EMSCRIPTEN
     // When running in command-line mode under Node.js, we make system directories available in the virtual filesystem.
     // This mode is used to compile 32-bit oleans.
@@ -361,9 +374,12 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
 
     int shell_rc = 1;
     // Do not rely on OS thread stack size, as for Lean executables
+    lean_mark_mt(shell_opts.raw());
     run_with_thread_stack([&]() {
         try {
             shell_rc = run_shell_main(argc - optind, argv + optind, shell_opts);
+        } catch (lean::wasm_exit_exception const & ex) {
+            shell_rc = ex.m_code;
         } catch (lean::throwable & ex) {
             std::cerr << ex.what() << "\n";
         } catch (std::bad_alloc & ex) {
@@ -371,4 +387,14 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
         }
     });
     return shell_rc;
+    } catch (lean::throwable & ex) {
+        lean_wasm_report_exception("lean::exception", ex.what());
+        return 1;
+    } catch (std::exception & ex) {
+        lean_wasm_report_exception("std::exception", ex.what());
+        return 1;
+    } catch (...) {
+        lean_wasm_report_exception("unknown", "non-standard exception");
+        return 1;
+    }
 }
