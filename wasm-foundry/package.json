@@ -17,6 +17,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "verify:manifest": "node scripts/verify-manifest.mjs",
+    "check:abi": "node scripts/ci/check-abi-diff.ts",
+    "verify:dual-checkers": "node scripts/ci/verify-dual-checkers.ts",
     "fetch:assets": "node scripts/fetch-assets.mjs",
     "upload:assets": "node scripts/upload-assets.mjs",
     "upload:modelscope": "node scripts/upload-modelscope.mjs"

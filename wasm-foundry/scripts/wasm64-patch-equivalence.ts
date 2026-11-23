@@ -1,20 +1,39 @@
-// 补丁行为等价性门禁：
-// 1. 差分对比未打补丁的官方 Linux Lean（$BOOT/bin/lean）与打补丁后的 wasm64 Lean（work/dist/lean.mjs），
-//    覆盖 replace_fn / whnfCoreStep / simpLoopStep 与上游 tests/elab 用例，校验退出码与标准输出严格一致；
-// 2. 在 wasm64 CLI 与 LSP --worker 上运行深栈压测（N=800..2000）与退出码/异常（io.cpp / shell.cpp）回归，
-//    确保既不退化原语义，也真正消除浏览器 Worker ~1 MB 栈溢出与异常崩溃。
+// 行为一致性门禁 v2（5 层防线 + 双独立数学检验器）：
+// - 第 1 层（Curated 子集；全量由 native-consistency-gate.yml CTest 执行）：官方 tests/elab 与 tests/elab_fail 差分
+// - 第 2 层：固定随机种子 Expr DAG + WHNF.Config 差分 Fuzzing（native 300 组 / wasm64 48 组）
+// - 第 3 层：反向报错拒绝集（Negative Corpus，严格禁止候选端放行）+ 双独立检验器（C++ leanchecker + Rust nanoda_bin）
+// - 第 4 层：由 scripts/ci/check-abi-diff.ts 独立执行 C 导出符号表 ABI Diff
+// - 第 5 层：显式有意差异登记簿 DIV-001 专属边界验证（DivergenceSimpRecDepth.lean）
+// - 平台压测：wasm64 CLI 与 LSP --worker 深栈（N=800..2000）与退出码回归
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import {
+  CERT_THEOREM_NAMES,
+  REJECT_THEOREM_NAMES,
+  buildCertificateProofCorpus,
+  buildTamperedAxiomCorpus,
+  runDualCheckerSuite,
+  type DualCheckerOptions,
+  type DualCheckerReport,
+} from './ci/verify-dual-checkers.ts';
 import {
   CliError,
   optionalString,
   parseArgs,
   requireNumber,
+  requireString,
   runCli,
   type FlagSpec,
 } from './lib/cli.ts';
+import {
+  DEFAULT_FUZZ_SEED,
+  DEFAULT_NATIVE_FUZZ_CASES,
+  DEFAULT_WASM_FUZZ_CASES,
+  buildFuzzDifferentialCorpus,
+} from './lib/differential-fuzz.ts';
+import { buildDivergenceBoundaryCorpus } from './lib/divergences.ts';
 import { isMainModule } from './lib/entry.ts';
 import { requireDir, requireFile } from './lib/fs-guards.ts';
 
@@ -27,14 +46,103 @@ export const CURATED_UPSTREAM_TESTS = [
   'tests/elab/dsimpZetaIssue.lean',
 ] as const;
 
+/** 上游 Lean tests/elab_fail 中零外部依赖的反向拒绝基准用例。 */
+export const CURATED_UPSTREAM_FAIL_TESTS = [
+  'tests/elab_fail/1011.lean',
+  'tests/elab_fail/1062.lean',
+  'tests/elab_fail/1079.lean',
+] as const;
+
+export interface NegativeCorpusCase {
+  readonly name: string;
+  readonly description: string;
+  readonly code: string;
+}
+
+/** 面向内核类型检查、宇宙层级、Kernel addDecl、Simp/WHNF 失败契约的反向拒绝用例集。 */
+export const NEGATIVE_CORPUS_CASES: readonly NegativeCorpusCase[] = [
+  {
+    name: 'neg_type_mismatch.lean',
+    description: '基础类型不匹配必须被 Elaborator/Kernel 拒绝',
+    code: ['import Init', '', 'example : (1 : Nat) = "abc" := rfl', ''].join('\n'),
+  },
+  {
+    name: 'neg_universe_mismatch.lean',
+    description: '宇宙多态层级不一致必须拒绝',
+    code: [
+      'import Init',
+      '',
+      'universe u v',
+      'example (α : Type u) (β : Type v) : α = β := rfl',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'neg_kernel_adddecl_illtyped.lean',
+    description: '绕过 Elaborator 直接喂入非法证明项必须被 C++ Kernel addDecl 拒绝',
+    code: [
+      'import Lean',
+      '',
+      'open Lean',
+      '',
+      '#eval show CoreM Unit from do',
+      '  let natTy := Expr.const ``Nat []',
+      '  let zero := Expr.const ``Nat.zero []',
+      '  let one := Expr.app (.const ``Nat.succ []) zero',
+      '  let decl := Declaration.thmDecl {',
+      '    name := `bogusKernelThm',
+      '    levelParams := []',
+      '    type := mkAppN (.const ``Eq [1]) #[natTy, zero, one]',
+      '    value := zero',
+      '  }',
+      '  addDecl decl',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'neg_simp_max_steps.lean',
+    description: 'simp 超过 maxSteps 上限必须非零退出报错',
+    code: [
+      'import Init',
+      '',
+      'private def negLin : Nat → Nat',
+      '  | 0 => 0',
+      '  | n + 1 => negLin n',
+      '',
+      'example : negLin 20 = 0 := by',
+      '  simp (config := { maxSteps := 4 }) [negLin]',
+      '',
+    ].join('\n'),
+  },
+  {
+    name: 'neg_whnf_defeq_fail.lean',
+    description: '不可定义相等的 let 归约不得被 rfl 误放行',
+    code: ['import Init', '', 'example (n : Nat) : (let x := n + 1; x) = n := rfl', ''].join('\n'),
+  },
+  {
+    name: 'neg_simp_unsolved_goal.lean',
+    description: '未闭合目标的 simp 必须失败',
+    code: ['import Init', '', 'example (n : Nat) : n + 1 = n := by simp', ''].join('\n'),
+  },
+];
+
 export interface EquivalenceOptions {
   readonly bootLean: string;
   readonly bootLib: string;
-  readonly wasmLean: string;
+  readonly wasmLean?: string;
+  readonly runLean?: string;
+  readonly candidateLean?: string;
+  readonly candidateLib?: string;
   readonly lspGlue?: string;
   readonly lean4Src: string;
-  readonly runLean: string;
   readonly lspScript: string;
+  readonly fuzzSeed: number;
+  readonly fuzzCases: number;
+  readonly leanchecker?: string;
+  readonly leanexport?: string;
+  readonly nanoda?: string;
+  readonly externalCheckerCmd?: string;
+  readonly skipDeepStress: boolean;
   readonly timeoutMs: number;
 }
 
@@ -47,11 +155,20 @@ export interface RunOutput {
 const EQUIV_SPEC: Record<string, FlagSpec> = {
   'boot-lean': { kind: 'string', required: true, valueName: 'bin/lean' },
   'boot-lib': { kind: 'string', required: true, valueName: 'lib/lean' },
-  'wasm-lean': { kind: 'string', required: true, valueName: 'lean.mjs' },
+  'wasm-lean': { kind: 'string', valueName: 'lean.mjs' },
+  'run-lean': { kind: 'string', valueName: 'run-lean.mjs' },
+  'candidate-lean': { kind: 'string', valueName: 'native-fork/bin/lean' },
+  'candidate-lib': { kind: 'string', valueName: 'native-fork/lib/lean' },
   'lsp-glue': { kind: 'string', valueName: 'lean-adapted-proxy.mjs' },
-  'lean4-src': { kind: 'string', required: true, valueName: 'work/lean4' },
-  'run-lean': { kind: 'string', required: true, valueName: 'run-lean.mjs' },
+  'lean4-src': { kind: 'string', required: true, valueName: 'lean4Root' },
   'lsp-script': { kind: 'string', valueName: 'wasm64-lsp-diagnostics.ts' },
+  'fuzz-seed': { kind: 'number', valueName: 'seed' },
+  'fuzz-cases': { kind: 'number', valueName: 'n' },
+  leanchecker: { kind: 'string', valueName: 'bin/leanchecker' },
+  leanexport: { kind: 'string', valueName: 'bin/leanexport' },
+  nanoda: { kind: 'string', valueName: 'bin/nanoda_bin' },
+  'external-checker': { kind: 'string', valueName: 'cmd' },
+  'skip-deep-stress': { kind: 'boolean' },
   timeout: { kind: 'number', valueName: 'ms' },
 };
 
@@ -61,18 +178,74 @@ export const parseEquivalenceOptions = (argv: readonly string[]): EquivalenceOpt
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
     throw new CliError(`--timeout 必须是正整数，收到 ${timeoutMs}`);
   }
+
+  const wasmLean = optionalString(parsed, 'wasm-lean');
+  const runLean = optionalString(parsed, 'run-lean');
+  const candidateLean = optionalString(parsed, 'candidate-lean');
+  const candidateLib = optionalString(parsed, 'candidate-lib');
+
+  const hasWasmPair = wasmLean !== undefined && runLean !== undefined;
+  const hasPartialWasm = (wasmLean !== undefined) !== (runLean !== undefined);
+  if (hasPartialWasm) {
+    throw new CliError('--wasm-lean 与 --run-lean 必须同时提供');
+  }
+  if (!hasWasmPair && candidateLean === undefined) {
+    throw new CliError('必须提供 (--wasm-lean + --run-lean) 或 --candidate-lean 作为候选引擎');
+  }
+
+  const fuzzSeed =
+    parsed.flags['fuzz-seed'] === undefined
+      ? DEFAULT_FUZZ_SEED
+      : requireNumber(parsed, 'fuzz-seed');
+  if (!Number.isInteger(fuzzSeed)) {
+    throw new CliError(`--fuzz-seed 必须是整数，收到 ${fuzzSeed}`);
+  }
+
+  const defaultFuzzCases =
+    candidateLean !== undefined && !hasWasmPair
+      ? DEFAULT_NATIVE_FUZZ_CASES
+      : DEFAULT_WASM_FUZZ_CASES;
+  const fuzzCases =
+    parsed.flags['fuzz-cases'] === undefined
+      ? defaultFuzzCases
+      : requireNumber(parsed, 'fuzz-cases');
+  if (!Number.isInteger(fuzzCases) || fuzzCases <= 0) {
+    throw new CliError(`--fuzz-cases 必须是正整数，收到 ${fuzzCases}`);
+  }
+
   const lspGlue = optionalString(parsed, 'lsp-glue');
   const lspScript =
     optionalString(parsed, 'lsp-script') ??
     resolve(import.meta.dirname, 'wasm64-lsp-diagnostics.ts');
+  const leanchecker = optionalString(parsed, 'leanchecker');
+  const leanexport = optionalString(parsed, 'leanexport');
+  const nanoda = optionalString(parsed, 'nanoda');
+  const externalCheckerCmd = optionalString(parsed, 'external-checker');
+  if (nanoda && !leanexport) {
+    throw new CliError('启用 --nanoda 时必须同时提供 --leanexport');
+  }
+
   return {
-    bootLean: requireFile(String(parsed.flags['boot-lean'] ?? ''), 'boot-lean'),
-    bootLib: requireDir(String(parsed.flags['boot-lib'] ?? ''), 'boot-lib'),
-    wasmLean: requireFile(String(parsed.flags['wasm-lean'] ?? ''), 'wasm-lean'),
+    bootLean: requireFile(requireString(parsed, 'boot-lean'), 'boot-lean'),
+    bootLib: requireDir(requireString(parsed, 'boot-lib'), 'boot-lib'),
+    ...(wasmLean === undefined ? {} : { wasmLean: requireFile(wasmLean, 'wasm-lean') }),
+    ...(runLean === undefined ? {} : { runLean: requireFile(runLean, 'run-lean') }),
+    ...(candidateLean === undefined
+      ? {}
+      : { candidateLean: requireFile(candidateLean, 'candidate-lean') }),
+    ...(candidateLib === undefined
+      ? {}
+      : { candidateLib: requireDir(candidateLib, 'candidate-lib') }),
     ...(lspGlue === undefined ? {} : { lspGlue: requireFile(lspGlue, 'lsp-glue') }),
-    lean4Src: requireDir(String(parsed.flags['lean4-src'] ?? ''), 'lean4-src'),
-    runLean: requireFile(String(parsed.flags['run-lean'] ?? ''), 'run-lean'),
+    lean4Src: requireDir(requireString(parsed, 'lean4-src'), 'lean4-src'),
     lspScript: requireFile(lspScript, 'lsp-script'),
+    fuzzSeed,
+    fuzzCases,
+    ...(leanchecker === undefined ? {} : { leanchecker: requireFile(leanchecker, 'leanchecker') }),
+    ...(leanexport === undefined ? {} : { leanexport: requireFile(leanexport, 'leanexport') }),
+    ...(nanoda === undefined ? {} : { nanoda: requireFile(nanoda, 'nanoda') }),
+    ...(externalCheckerCmd === undefined ? {} : { externalCheckerCmd }),
+    skipDeepStress: Boolean(parsed.flags['skip-deep-stress']),
     timeoutMs,
   };
 };
@@ -91,7 +264,6 @@ export const normalizeStdout = (text: string, hostSrcDir: string): string => {
     .trim();
 };
 
-/** 报错信息里贴多长日志；trap 的栈可能很长，不截断会把真正的差异挤出 Actions 折叠块。 */
 const LOG_PREVIEW_CHARS = 4000;
 
 const preview = (text: string): string =>
@@ -105,57 +277,60 @@ export const assertOutputsMatch = (
 ): void => {
   if (expected.status !== actual.status) {
     throw new Error(
-      `[${label}] 退出码不一致: boot=${expected.status} wasm64=${actual.status}\n` +
+      `[${label}] 退出码不一致: boot=${expected.status} candidate=${actual.status}\n` +
         `boot stdout:\n${preview(normalizeStdout(expected.stdout, hostSrcDir))}\n` +
         `boot stderr:\n${preview(expected.stderr)}\n` +
-        `wasm64 stdout:\n${preview(normalizeStdout(actual.stdout, hostSrcDir))}\n` +
-        `wasm64 stderr:\n${preview(actual.stderr)}`,
+        `candidate stdout:\n${preview(normalizeStdout(actual.stdout, hostSrcDir))}\n` +
+        `candidate stderr:\n${preview(actual.stderr)}`,
     );
   }
   const bootOut = normalizeStdout(expected.stdout, hostSrcDir);
-  const wasmOut = normalizeStdout(actual.stdout, hostSrcDir);
-  if (bootOut !== wasmOut) {
+  const candOut = normalizeStdout(actual.stdout, hostSrcDir);
+  if (bootOut !== candOut) {
     throw new Error(
-      `[${label}] 输出行为与原版 Lean 不一致!\n--- boot ---\n${preview(bootOut)}\n--- wasm64 ---\n${preview(wasmOut)}`,
+      `[${label}] 输出行为与原版 Lean 不一致!\n--- boot ---\n${preview(bootOut)}\n--- candidate ---\n${preview(candOut)}`,
     );
   }
 };
 
-/**
- * wasm64 CLI 退出期堆损坏的已知签名：`lean_dec_ref_cold` → `emscripten_builtin_free` 越界。
- *
- * 与三处栈补丁无关（补丁只改遍历方式，语义由 stdout 逐字节比对），属于 memory64 + 线程
- * 退出模型的既有缺陷，而且**偶发**：同一份二进制、同一份缓存，run `44519972634` 首次以
- * `RuntimeError: memory access out of bounds` 退出 99，原样重跑就通过。详见
- * `docs/WASM64-SPIKE.md`「尚未验证」。
- */
+/** 反向拒绝断言：官方原版必须非零拒绝，候选引擎也必须以相同错误拒绝，严禁错误放行（status=0）。 */
+export const assertNegativeMatch = (
+  label: string,
+  expectedReject: RunOutput,
+  actual: RunOutput,
+  hostSrcDir: string,
+): void => {
+  if (expectedReject.status === 0) {
+    throw new Error(`[${label}] 反例自身在原版 boot lean 返回 0，用例无效！`);
+  }
+  if (actual.status === 0) {
+    throw new Error(
+      `[${label}] 安全红线违背：官方原版拒绝 (status=${expectedReject.status})，但候选引擎错误放行 (status=0)！\n` +
+        `boot stdout:\n${preview(normalizeStdout(expectedReject.stdout, hostSrcDir))}\n` +
+        `candidate stdout:\n${preview(normalizeStdout(actual.stdout, hostSrcDir))}`,
+    );
+  }
+  assertOutputsMatch(label, expectedReject, actual, hostSrcDir);
+};
+
 export const KNOWN_EXIT_TRAP_PATTERN = /emscripten_builtin_free|lean_dec_ref_cold/;
 
-/** 是否命中「退出期被已知 trap 打断」——只有这类崩溃允许降级成告警。 */
 export const isKnownExitTrap = (output: RunOutput): boolean =>
   output.status !== 0 && KNOWN_EXIT_TRAP_PATTERN.test(output.stderr);
 
 const stdoutMatches = (expected: RunOutput, actual: RunOutput, hostSrcDir: string): boolean =>
   normalizeStdout(expected.stdout, hostSrcDir) === normalizeStdout(actual.stdout, hostSrcDir);
 
-/**
- * 跑一次并校验，对「stdout 完全一致、只是退出期被已知 trap 打断」的偶发情形重跑一次；
- * 复现则降级成告警（与 `IO.Process.exit` 同一套处理）。
- *
- * 判据刻意收得很紧：`check` 里任何 stdout 差异、或 stderr 不是那个已知签名（例如
- * `Maximum call stack size exceeded` 这类真回归），都立即失败。
- */
 export const withExitTrapTolerance = (
   label: string,
   runOnce: () => RunOutput,
   check: (output: RunOutput) => void,
   hasEvidence: (output: RunOutput) => boolean = () => true,
 ): RunOutput => {
-  /** 命中已知 trap 但输出证据不完整 → 说明崩在中途，不是退出期，照样红。 */
   const blamePartialOutput = (output: RunOutput, error: unknown): Error =>
     new Error(
-      `[${label}] wasm64 在跑到一半就被已知退出期 trap 打断 (status=${output.status})，stdout 校验未通过\n` +
-        `wasm64 stderr:\n${preview(output.stderr)}\n` +
+      `[${label}] candidate 在跑到一半就被已知退出期 trap 打断 (status=${output.status})，校验未通过\n` +
+        `candidate stderr:\n${preview(output.stderr)}\n` +
         `原始差异:\n${error instanceof Error ? error.message : String(error)}`,
     );
 
@@ -179,14 +354,13 @@ export const withExitTrapTolerance = (
       if (!hasEvidence(second)) throw blamePartialOutput(second, retryError);
       console.warn(
         `[equiv] WARN ${label} 退出期崩溃复现 (status=${second.status})，但输出证据完整` +
-          '（stdout 校验已通过）；按 docs/WASM64-SPIKE.md「尚未验证」记录的运行时限制放行，不阻断门禁',
+          '（stdout/产物校验已通过）；按 docs/WASM64-SPIKE.md 记录的运行时限制放行，不阻断门禁',
       );
       return second;
     }
   }
 };
 
-/** 比对一次 wasm64 结果，套用退出期 trap 的容忍策略。 */
 export const compareWithExitTrapTolerance = (
   label: string,
   expected: RunOutput,
@@ -231,26 +405,22 @@ export const buildDifferentialCorpus = (): string =>
     '  IO.println s!"inst_str={inst}"',
     '',
     '-- 2. WHNF：zeta / zetaHave / zetaUnused / trackZetaDelta / cfg.beta / cfg.proj 四模式',
-    '-- 这些定义会被 `.const` 按名字引用，不能是 private（私有名字会被 mangle）。',
     'def mkFun : Nat → (Nat → Nat) := fun k x => x + k',
     'structure Box where val : Nat',
     'def wrapBox (n : Nat) : Box := ⟨n + 1⟩',
     '',
     'private def runWhnfCases : MetaM Unit := do',
-    '  -- 2a. proj 四种透明度开关',
     '  let projExpr : Expr := .proj `Box 0 (.app (.const `wrapBox []) (.lit (.natVal 4)))',
     '  for mode in [TransparencyMode.all, .default, .reducible, .instances] do',
     '    let out ← withTransparency mode <| withConfig (fun c => { c with proj := .yes }) (whnf projExpr)',
     '    IO.println s!"proj_yes[{reprStr mode}]={out}"',
     '  let outNo ← withConfig (fun c => { c with proj := .no }) (whnf projExpr)',
     '  IO.println s!"proj_no={outNo}"',
-    '  -- 2b. cfg.beta = false 时：头原本不是 lambda 但归约成 lambda 会继续 beta；头原本是 lambda 则不 beta',
     '  let appHeadNonLam : Expr := .app (.app (.const `mkFun []) (.lit (.natVal 5))) (.lit (.natVal 1))',
     '  let appHeadLam : Expr := .app (.lam `x (.const `Nat []) (.bvar 0) .default) (.lit (.natVal 9))',
     '  let noBeta1 ← withConfig (fun c => { c with beta := false }) (whnf appHeadNonLam)',
     '  let noBeta2 ← withConfig (fun c => { c with beta := false }) (whnf appHeadLam)',
     '  IO.println s!"beta_false_nonlam={noBeta1} beta_false_lam={noBeta2}"',
-    '  -- 2c. withTrackingZetaDelta 与 zetaUnused',
     '  let res ← withLetDecl `a (.const `Nat []) (.lit (.natVal 7)) fun fv => do',
     '    withConfig (fun c => { c with zetaDelta := true }) <| withTrackingZetaDelta do',
     '      let w ← whnf (.app (.app (.const `Nat.add []) fv) (.lit (.natVal 2)))',
@@ -287,7 +457,7 @@ export const buildDifferentialCorpus = (): string =>
     '',
   ].join('\n');
 
-/** 深层递归压测（仅 patched wasm64 需要跑过；验证 replace_fn / whnfCoreStep / simpLoopStep）。 */
+/** 深层递归压测（仅 wasm64 需要跑过；验证 replace_fn / whnfCoreStep / simpLoopStep）。 */
 export const buildDeepStressCorpus = (): string =>
   [
     'import Lean',
@@ -295,7 +465,6 @@ export const buildDeepStressCorpus = (): string =>
     'open Lean',
     '',
     'private def mkDeepApp (n : Nat) : Expr :=',
-    '  -- 用 Nat.rec 而不是 Nat.recOn：后者的 LCNF 签名不在官方 olean 里，#eval 跑不起来。',
     '  Nat.rec (.const `base [Level.param `u]) (fun _ acc =>',
     '    .lam `x (.const `Nat []) (.app acc (.bvar 0)) .default) n',
     '',
@@ -340,12 +509,30 @@ const runBootLean = (options: EquivalenceOptions, workDir: string, filePath: str
   };
 };
 
-const runWasmLean = (options: EquivalenceOptions, workDir: string, relFile: string): RunOutput => {
+const runCandidateLean = (
+  options: EquivalenceOptions,
+  workDir: string,
+  relFile: string,
+): RunOutput => {
+  if (options.candidateLean) {
+    const res = spawnSync(options.candidateLean, ['-j1', '-R', workDir, join(workDir, relFile)], {
+      cwd: workDir,
+      env: { ...process.env, LEAN_PATH: options.candidateLib ?? options.bootLib },
+      encoding: 'utf8',
+      timeout: options.timeoutMs,
+    });
+    if (res.error) throw res.error;
+    return {
+      status: res.status ?? 1,
+      stdout: res.stdout ?? '',
+      stderr: res.stderr ?? '',
+    };
+  }
   const res = spawnSync(
     process.execPath,
     [
-      options.runLean,
-      options.wasmLean,
+      options.runLean as string,
+      options.wasmLean as string,
       workDir,
       options.bootLib,
       '--',
@@ -367,9 +554,73 @@ const runWasmLean = (options: EquivalenceOptions, workDir: string, relFile: stri
   };
 };
 
+const compileCandidateOlean = (
+  options: EquivalenceOptions,
+  workDir: string,
+  relFile: string,
+  outOleanRel: string,
+): RunOutput => {
+  if (options.candidateLean) {
+    const res = spawnSync(
+      options.candidateLean,
+      ['-j1', '-R', workDir, '-o', join(workDir, outOleanRel), join(workDir, relFile)],
+      {
+        cwd: workDir,
+        env: { ...process.env, LEAN_PATH: options.candidateLib ?? options.bootLib },
+        encoding: 'utf8',
+        timeout: options.timeoutMs,
+      },
+    );
+    if (res.error) throw res.error;
+    return {
+      status: res.status ?? 1,
+      stdout: res.stdout ?? '',
+      stderr: res.stderr ?? '',
+    };
+  }
+  const res = spawnSync(
+    process.execPath,
+    [
+      options.runLean as string,
+      options.wasmLean as string,
+      workDir,
+      options.bootLib,
+      '--',
+      '-j1',
+      '-R',
+      '/src',
+      '-o',
+      `/src/${outOleanRel}`,
+      `/src/${relFile}`,
+    ],
+    {
+      encoding: 'utf8',
+      timeout: options.timeoutMs,
+    },
+  );
+  if (res.error) throw res.error;
+  return {
+    status: res.status ?? 1,
+    stdout: res.stdout ?? '',
+    stderr: res.stderr ?? '',
+  };
+};
+
 export interface EquivalenceRunners {
   readonly runBoot?: (options: EquivalenceOptions, workDir: string, filePath: string) => RunOutput;
   readonly runWasm?: (options: EquivalenceOptions, workDir: string, relFile: string) => RunOutput;
+  readonly runCandidate?: (
+    options: EquivalenceOptions,
+    workDir: string,
+    relFile: string,
+  ) => RunOutput;
+  readonly compileOlean?: (
+    options: EquivalenceOptions,
+    workDir: string,
+    relFile: string,
+    outOleanRel: string,
+  ) => RunOutput;
+  readonly runDualCheckers?: (dualOptions: DualCheckerOptions) => DualCheckerReport;
   readonly runLsp?: (options: EquivalenceOptions, deepCode: string) => RunOutput;
 }
 
@@ -415,10 +666,14 @@ export const runEquivalenceSuite = (
   runners: EquivalenceRunners = {},
 ): void => {
   const runBoot = runners.runBoot ?? runBootLean;
-  const runWasm = runners.runWasm ?? runWasmLean;
+  const runCandidate = runners.runCandidate ?? runners.runWasm ?? runCandidateLean;
+  const compileOlean = runners.compileOlean ?? compileCandidateOlean;
+  const runCheckers = runners.runDualCheckers ?? ((dOpts) => runDualCheckerSuite(dOpts));
   const runLsp = runners.runLsp ?? runLspDeepCheck;
+
   const workDir = mkdtempSync(join(tmpdir(), 'wasm64-patch-equiv-'));
   try {
+    // 第 1 层（Curated 核心正向回归）
     for (const rel of CURATED_UPSTREAM_TESTS) {
       const srcPath = join(options.lean4Src, rel);
       if (!existsSync(srcPath)) {
@@ -433,10 +688,16 @@ export const runEquivalenceSuite = (
           `上游测试 ${rel} 在原版 boot lean 就失败 (${bootRes.status}): ${bootRes.stderr}`,
         );
       }
-      compareWithExitTrapTolerance(rel, bootRes, () => runWasm(options, workDir, name), workDir);
+      compareWithExitTrapTolerance(
+        rel,
+        bootRes,
+        () => runCandidate(options, workDir, name),
+        workDir,
+      );
       console.log(`[equiv] upstream pass: ${rel}`);
     }
 
+    // 定向核心差分语料
     const diffPath = join(workDir, 'PatchEquiv.lean');
     writeFileSync(diffPath, buildDifferentialCorpus());
     const bootDiff = runBoot(options, workDir, diffPath);
@@ -448,40 +709,170 @@ export const runEquivalenceSuite = (
     compareWithExitTrapTolerance(
       'PatchEquiv.lean',
       bootDiff,
-      () => runWasm(options, workDir, 'PatchEquiv.lean'),
+      () => runCandidate(options, workDir, 'PatchEquiv.lean'),
       workDir,
     );
     console.log('[equiv] PatchEquiv.lean differential match ok');
 
-    // 深栈压测没有 boot 基准，判据是「跑到底」：`deep_stress_ok` 只在两段深链 simp 之后
-    // 才打印，因此它出现在 stdout 里就证明深栈路径已经走完，退出期的 trap 与它无关。
-    const stressPath = join(workDir, 'DeepStress.lean');
-    writeFileSync(stressPath, buildDeepStressCorpus());
+    // 第 2 层：固定随机种子 Expr DAG + WHNF.Config 差分 Fuzzing
+    const fuzzPath = join(workDir, 'FuzzEquiv.lean');
+    writeFileSync(
+      fuzzPath,
+      buildFuzzDifferentialCorpus({
+        seed: options.fuzzSeed,
+        exprCases: options.fuzzCases,
+        whnfCases: options.fuzzCases,
+      }),
+    );
+    const bootFuzz = runBoot(options, workDir, fuzzPath);
+    if (bootFuzz.status !== 0) {
+      throw new Error(
+        `FuzzEquiv.lean 在原版 boot lean 失败 (${bootFuzz.status}): ${bootFuzz.stderr}\n${bootFuzz.stdout}`,
+      );
+    }
+    compareWithExitTrapTolerance(
+      `FuzzEquiv.lean(seed=${options.fuzzSeed},n=${options.fuzzCases})`,
+      bootFuzz,
+      () => runCandidate(options, workDir, 'FuzzEquiv.lean'),
+      workDir,
+    );
+    console.log(
+      `[equiv] layer-2 fuzz differential ok (seed=${options.fuzzSeed}, cases=${options.fuzzCases})`,
+    );
+
+    // 第 3 层 A：反向报错拒绝集（自定反例 + 上游 tests/elab_fail 抽样）
+    for (const negCase of NEGATIVE_CORPUS_CASES) {
+      const negPath = join(workDir, negCase.name);
+      writeFileSync(negPath, negCase.code);
+      const bootNeg = runBoot(options, workDir, negPath);
+      withExitTrapTolerance(
+        negCase.name,
+        () => runCandidate(options, workDir, negCase.name),
+        (candOut) => assertNegativeMatch(negCase.name, bootNeg, candOut, workDir),
+        (candOut) =>
+          candOut.status !== 0 &&
+          normalizeStdout(bootNeg.stdout, workDir) === normalizeStdout(candOut.stdout, workDir),
+      );
+      console.log(`[equiv] layer-3a negative reject ok: ${negCase.name}`);
+    }
+
+    for (const rel of CURATED_UPSTREAM_FAIL_TESTS) {
+      const srcPath = join(options.lean4Src, rel);
+      if (!existsSync(srcPath)) {
+        throw new Error(`找不到上游反向测试文件: ${srcPath}`);
+      }
+      const name = rel.replace(/\//g, '_');
+      const localFile = join(workDir, name);
+      writeFileSync(localFile, readFileSync(srcPath, 'utf8'));
+      const bootNeg = runBoot(options, workDir, localFile);
+      withExitTrapTolerance(
+        rel,
+        () => runCandidate(options, workDir, name),
+        (candOut) => assertNegativeMatch(rel, bootNeg, candOut, workDir),
+        (candOut) =>
+          candOut.status !== 0 &&
+          normalizeStdout(bootNeg.stdout, workDir) === normalizeStdout(candOut.stdout, workDir),
+      );
+      console.log(`[equiv] layer-3a upstream negative reject ok: ${rel}`);
+    }
+
+    // 第 5 层：有意差异 DIV-001 专属边界验证
+    const divBoundary = buildDivergenceBoundaryCorpus();
+    const divPath = join(workDir, divBoundary.name);
+    writeFileSync(divPath, divBoundary.code);
+    const bootDiv = runBoot(options, workDir, divPath);
+    const bootDivText = `${bootDiv.stdout}\n${bootDiv.stderr}`;
+    if (bootDiv.status === 0 || !divBoundary.expectedBootErrorPattern.test(bootDivText)) {
+      throw new Error(
+        `[layer-5 ${divBoundary.divergenceId}] 原版 boot lean 未按预期触发递归深度拒绝 (status=${bootDiv.status}):\n${preview(bootDivText)}`,
+      );
+    }
     withExitTrapTolerance(
-      'DeepStress.lean',
-      () => runWasm(options, workDir, 'DeepStress.lean'),
-      (output) => {
-        if (output.status !== 0 || !output.stdout.includes('deep_stress_ok')) {
+      `${divBoundary.divergenceId}:${divBoundary.name}`,
+      () => runCandidate(options, workDir, divBoundary.name),
+      (candOut) => {
+        if (candOut.status !== 0 || !candOut.stdout.includes(divBoundary.expectedForkMarker)) {
           throw new Error(
-            `DeepStress.lean 在 wasm64 CLI 失败 (status=${output.status}):\n${preview(output.stderr)}\n${preview(output.stdout)}`,
+            `[layer-5 ${divBoundary.divergenceId}] 候选引擎未通过专属边界用例 (status=${candOut.status}):\n${preview(candOut.stdout)}\n${preview(candOut.stderr)}`,
           );
         }
       },
-      (output) => output.stdout.includes('deep_stress_ok'),
+      (candOut) => candOut.stdout.includes(divBoundary.expectedForkMarker),
     );
-    console.log('[equiv] DeepStress.lean CLI ok');
+    console.log(`[equiv] layer-5 divergence boundary ${divBoundary.divergenceId} ok`);
 
-    // `IO.Process.exit` 目前会在 wasm64 的 pthread 里抛出 wasm 异常，宿主 worker
-    // 收到不可克隆的异常后以 1 退出。这属于运行时进程模型问题，不是三处栈补丁的
-    // 语义差异，所以只告警；修好后再把这里升级成硬断言。
-    writeFileSync(join(workDir, 'Exit42.lean'), '#eval (IO.Process.exit 42 : IO Unit)\n');
-    const exitRes = runWasm(options, workDir, 'Exit42.lean');
-    if (exitRes.status === 42) {
-      console.log('[equiv] IO.Process.exit 42 ok');
-    } else {
-      console.warn(
-        `[equiv] SKIP IO.Process.exit 退出码断言：wasm64 CLI 返回 ${exitRes.status}（已知运行时限制，见 docs/WASM64-SPIKE.md）`,
+    // 第 3 层 B：双独立数学检验器交叉审计（候选引擎产物 -> 官方 C++ leanchecker + Rust nanoda_bin）
+    if (options.leanchecker || options.nanoda || options.externalCheckerCmd) {
+      const certDir = join(workDir, 'cert-oleans');
+      mkdirSync(certDir, { recursive: true });
+      writeFileSync(join(workDir, 'CertProofs.lean'), buildCertificateProofCorpus());
+      writeFileSync(join(workDir, 'CertRejectSorry.lean'), buildTamperedAxiomCorpus());
+
+      for (const modName of ['CertProofs', 'CertRejectSorry']) {
+        const relLean = `${modName}.lean`;
+        const relOlean = `cert-oleans/${modName}.olean`;
+        const absOlean = join(workDir, relOlean);
+        withExitTrapTolerance(
+          `compile:${modName}`,
+          () => compileOlean(options, workDir, relLean, relOlean),
+          (out) => {
+            if (!existsSync(absOlean) || (out.status !== 0 && !isKnownExitTrap(out))) {
+              throw new Error(
+                `[layer-3b] 候选引擎编译 ${relLean} 失败 (status=${out.status}):\n${preview(out.stderr)}\n${preview(out.stdout)}`,
+              );
+            }
+          },
+          () => existsSync(absOlean),
+        );
+      }
+
+      runCheckers({
+        oleanDir: certDir,
+        moduleName: 'CertProofs',
+        bootLib: options.candidateLib ?? options.bootLib,
+        theorems: CERT_THEOREM_NAMES,
+        ...(options.leanchecker === undefined ? {} : { leanchecker: options.leanchecker }),
+        ...(options.leanexport === undefined ? {} : { leanexport: options.leanexport }),
+        ...(options.nanoda === undefined ? {} : { nanoda: options.nanoda }),
+        rejectModuleName: 'CertRejectSorry',
+        rejectTheorems: REJECT_THEOREM_NAMES,
+        ...(options.externalCheckerCmd === undefined
+          ? {}
+          : { externalCheckerCmd: options.externalCheckerCmd }),
+        timeoutMs: options.timeoutMs,
+      });
+      console.log('[equiv] layer-3b dual independent kernel verifiers ok');
+    }
+
+    // 平台专项压测：DeepStress & IO.Process.exit & LSP --worker（在 wasm64 模式执行）
+    if (!options.skipDeepStress) {
+      const stressPath = join(workDir, 'DeepStress.lean');
+      writeFileSync(stressPath, buildDeepStressCorpus());
+      withExitTrapTolerance(
+        'DeepStress.lean',
+        () => runCandidate(options, workDir, 'DeepStress.lean'),
+        (output) => {
+          if (output.status !== 0 || !output.stdout.includes('deep_stress_ok')) {
+            throw new Error(
+              `DeepStress.lean 在候选引擎失败 (status=${output.status}):\n${preview(output.stderr)}\n${preview(output.stdout)}`,
+            );
+          }
+        },
+        (output) => output.stdout.includes('deep_stress_ok'),
       );
+      console.log('[equiv] DeepStress.lean CLI ok');
+
+      if (!options.candidateLean) {
+        writeFileSync(join(workDir, 'Exit42.lean'), '#eval (IO.Process.exit 42 : IO Unit)\n');
+        const exitRes = runCandidate(options, workDir, 'Exit42.lean');
+        if (exitRes.status === 42) {
+          console.log('[equiv] IO.Process.exit 42 ok');
+        } else {
+          console.warn(
+            `[equiv] SKIP IO.Process.exit 退出码断言：wasm64 CLI 返回 ${exitRes.status}（已知运行时限制，见 docs/WASM64-SPIKE.md）`,
+          );
+        }
+      }
     }
 
     if (options.lspGlue) {
@@ -504,7 +895,7 @@ export const runEquivalenceSuite = (
       console.log('[equiv] LSP --worker deep simp N=800 ok');
     }
 
-    console.log('[equiv] all patch equivalence gates passed');
+    console.log('[equiv] all v2 consistency & equivalence gates passed');
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }

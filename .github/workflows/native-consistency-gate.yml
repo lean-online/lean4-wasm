@@ -1,0 +1,195 @@
+name: Consistency · 5-Layer Gate & Dual Checkers
+
+# 5 层行为一致性防线 + 双独立数学检验器（原生 Linux 全量回归与 ABI 静态 Diff）：
+#   Job 1 (abi-diff)         第 4 层：C 导出符号表 ABI 静态 Diff（对比 v4.36.0 基准）
+#   Job 2 (native-consistency)
+#     - 第 1 层：原生 Stage 1 Fork 运行官方全量 tests/elab + tests/elab_fail
+#     - 第 2 层：固定随机种子 Expr DAG + WHNF.Config 差分 Fuzzing（300 组）
+#     - 第 3 层：反向拒绝集 + 双独立检验器（官方 C++ leanchecker + 异构 Rust nanoda_bin）
+#     - 第 5 层：DIVERGENCES (DIV-001) 边界验证与差异清单登记同步
+on:
+  push:
+    branches: [wasm64-v4.36.0]
+    paths:
+      - 'src/**'
+      - 'wasm-foundry/scripts/**'
+      - 'wasm-foundry/docs/DIVERGENCES.md'
+      - '.github/workflows/native-consistency-gate.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'wasm-foundry/scripts/**'
+      - 'wasm-foundry/docs/DIVERGENCES.md'
+      - '.github/workflows/native-consistency-gate.yml'
+  schedule:
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+    inputs:
+      run_full_elab:
+        description: '是否运行全量 tests/elab 与 tests/elab_fail（关掉只跑 Fuzz/反例/双检验器）'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: consistency-v2-${{ github.event_name }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  abi-diff:
+    name: 第 4 层 · C 导出符号表 ABI Diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: 安装依赖
+        run: sudo apt-get update && sudo apt-get install -y zstd curl
+
+      - name: 缓存官方 Lean 引导包
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: wasm-foundry/work/lean-*-linux
+          key: wasm64-boot-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}
+
+      - name: 校对基准 v4.36.0 改动模块的 C 导出符号表 ABI
+        working-directory: wasm-foundry
+        run: |
+          if ! git -C "$GITHUB_WORKSPACE" rev-parse --verify -q refs/tags/v4.36.0 > /dev/null; then
+            git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth 1 origin refs/tags/v4.36.0:refs/tags/v4.36.0
+          fi
+          BOOT="$(bash scripts/ci/ensure-boot.sh "$GITHUB_WORKSPACE/wasm-foundry")"
+          node scripts/ci/check-abi-diff.ts \
+            --boot-lean "$BOOT/bin/lean" \
+            --boot-lib "$BOOT/lib/lean" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base-ref v4.36.0 \
+            --timeout 180000
+
+  native-consistency:
+    name: 第 1/2/3/5 层 · 原生全量回归与双检验器
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: 安装原生构建与测试依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake make ccache pkg-config g++ lld \
+            libgmp-dev libuv1-dev libssl-dev \
+            zstd python3 diffutils curl
+
+      - name: 缓存官方 Lean 引导包
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: wasm-foundry/work/lean-*-linux
+          key: wasm64-boot-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}
+
+      - name: 准备官方引导包与 lean4-commit
+        id: boot
+        working-directory: wasm-foundry
+        run: |
+          BOOT="$(bash scripts/ci/ensure-boot.sh "$GITHUB_WORKSPACE/wasm-foundry")"
+          LEAN_COMMIT="$(node -e 'import("./scripts/pin-lean.ts").then((m) => process.stdout.write(m.resolveLeanPin().commit))')"
+          echo "dir=$BOOT" >> "$GITHUB_OUTPUT"
+          echo "commit=$LEAN_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: 缓存异构纯 Rust 独立内核 (nanoda_bin)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: wasm-foundry/work/nanoda-bin
+          key: nanoda-v1-4c544ed4099c
+
+      - name: 准备异构纯 Rust 内核 nanoda_bin
+        id: nanoda
+        working-directory: wasm-foundry
+        run: |
+          NANODA_BIN="$(bash scripts/ci/ensure-nanoda.sh "$GITHUB_WORKSPACE/wasm-foundry" "${{ steps.boot.outputs.dir }}")"
+          echo "bin=$NANODA_BIN" >> "$GITHUB_OUTPUT"
+          ls -l "$NANODA_BIN"
+
+      - name: 缓存原生构建 ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.ccache
+          key: native-ccache-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/kernel/**', 'src/runtime/**', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean') }}
+          restore-keys: |
+            native-ccache-v1-
+
+      - name: 构建软 Fork 原生 Stage 1（复用官方引导包）
+        run: |
+          ccache -M 4G
+          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-native" \
+            -G "Unix Makefiles" \
+            -DSTAGE1_PREV_STAGE="${{ steps.boot.outputs.dir }}" \
+            -DLEAN_GITHASH_OVERRIDE="${{ steps.boot.outputs.commit }}" \
+            -DLEAN_HEADER_SNAPSHOTS=ON \
+            -DWFAIL=OFF \
+            -DSTRIP_BINARIES=OFF \
+            -DUSE_GMP=ON \
+            -DUSE_MIMALLOC=OFF \
+            -DLLVM=OFF
+          cmake --build "$GITHUB_WORKSPACE/build-native" --target stage1 -j"$(nproc)"
+          "$GITHUB_WORKSPACE/build-native/stage1/bin/lean" --version
+          ccache -s || true
+
+      - name: 第 2/3/5 层 · 原生差分 Fuzzing (300 组) + 反向拒绝集 + 双独立检验器
+        working-directory: wasm-foundry
+        run: |
+          node scripts/wasm64-patch-equivalence.ts \
+            --boot-lean "${{ steps.boot.outputs.dir }}/bin/lean" \
+            --boot-lib "${{ steps.boot.outputs.dir }}/lib/lean" \
+            --candidate-lean "$GITHUB_WORKSPACE/build-native/stage1/bin/lean" \
+            --candidate-lib "$GITHUB_WORKSPACE/build-native/stage1/lib/lean" \
+            --lean4-src "$GITHUB_WORKSPACE" \
+            --fuzz-cases 300 \
+            --leanchecker "${{ steps.boot.outputs.dir }}/bin/leanchecker" \
+            --leanexport "${{ steps.boot.outputs.dir }}/bin/leanexport" \
+            --nanoda "${{ steps.nanoda.outputs.bin }}" \
+            --skip-deep-stress \
+            --timeout 180000
+
+      - name: 第 1 层 · 官方全量 tests/elab 与 tests/elab_fail 回归
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.run_full_elab
+        working-directory: wasm-foundry
+        run: |
+          set -euo pipefail
+          DIV_REGEX="$(node -e '
+            import("./scripts/lib/divergences.ts").then((m) => {
+              const items = m.INTENTIONAL_DIVERGENCES.flatMap((d) =>
+                d.expectedUpstreamTestDivergences.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+              );
+              process.stdout.write(items.join("|"));
+            });
+          ')"
+          EXCLUDE_REGEX='elab/(async_.*|sync_.*|net_addr|networkInterfaces|openssl|handleLocking|task_iterators)'
+          if [ -n "$DIV_REGEX" ]; then
+            EXCLUDE_REGEX="${EXCLUDE_REGEX}|${DIV_REGEX}"
+          fi
+          echo "CTest exclude regex: $EXCLUDE_REGEX"
+          ctest --test-dir "$GITHUB_WORKSPACE/build-native/stage1" \
+            -j"$(nproc)" --output-on-failure --timeout 120 \
+            -R '^(build_lean_header_snapshots\.sh|elab/|elab_fail/)' \
+            -E "$EXCLUDE_REGEX"
+
+          if [ -n "$DIV_REGEX" ]; then
+            echo "::group::观测已登记有意差异对上游用例的实际影响 ($DIV_REGEX)"
+            ctest --test-dir "$GITHUB_WORKSPACE/build-native/stage1" \
+              -j"$(nproc)" --output-on-failure --timeout 60 \
+              -R "^(${DIV_REGEX})$" || true
+            echo "::endgroup::"
+          fi

@@ -272,6 +272,20 @@ jobs:
           test -n "$WHNF_C"
           grep -qE 'LEAN_EXPORT.*l___private_Lean_Meta_WHNF_0__Lean_Meta_whnfCore_go\(' "$WHNF_C"
 
+      - name: 第 4 层 · 全模块 C 导出符号表 ABI 静态 Diff
+        run: |
+          if ! git -C "$GITHUB_WORKSPACE" rev-parse --verify -q refs/tags/v4.36.0 > /dev/null; then
+            git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth 1 origin refs/tags/v4.36.0:refs/tags/v4.36.0
+          fi
+          BOOT="$(node scripts/ci/boot-dir.ts)"
+          node scripts/ci/check-abi-diff.ts \
+            --boot-lean "$BOOT/bin/lean" \
+            --boot-lib "$BOOT/lib/lean" \
+            --repo "$GITHUB_WORKSPACE" \
+            --base-ref v4.36.0 \
+            --cgen-dir "$GITHUB_WORKSPACE/wasm-foundry/work/cgen" \
+            --timeout 180000
+
   # 每次 push 的快速回路：只证明工具链、Init 编译和 Init LSP 没坏。
   smoke:
     needs: prepare
@@ -547,13 +561,20 @@ jobs:
             --mode worker --timeout 180000 --idle-timeout 120000 --jobs "$JOBS" \
             2>&1 | tee -a work/init-lsp.log
 
-      - name: 补丁行为等价与深栈回归门禁（unpatched boot vs patched wasm64）
+      - name: 缓存异构纯 Rust 独立内核 (nanoda_bin)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: wasm-foundry/work/nanoda-bin
+          key: nanoda-v1-4c544ed4099c
+
+      - name: 补丁行为等价、双检验器与深栈回归门禁（v2）
         timeout-minutes: 15
         env:
           LEAN_STACK_SIZE_KB: '16384'
           LEAN_MAIN_USE_THREAD: '0'
         run: |
           BOOT="$(node scripts/ci/boot-dir.ts)"
+          NANODA_BIN="$(bash scripts/ci/ensure-nanoda.sh "$GITHUB_WORKSPACE/wasm-foundry" "$BOOT")"
           GLUE=work/dist/lean-adapted-proxy.mjs
           test -f "$GLUE" || GLUE=work/dist/lean-adapted.mjs
           node scripts/wasm64-patch-equivalence.ts \
@@ -563,6 +584,9 @@ jobs:
             --lsp-glue "$GLUE" \
             --lean4-src "$GITHUB_WORKSPACE" \
             --run-lean wasm-llvm/producer/lean-browser/scripts/run-lean.mjs \
+            --leanchecker "$BOOT/bin/leanchecker" \
+            --leanexport "$BOOT/bin/leanexport" \
+            --nanoda "$NANODA_BIN" \
             --timeout 180000
 
       # 失败立即留证据，不等到最后；后续步骤也不会再跑。
