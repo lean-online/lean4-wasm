@@ -454,7 +454,7 @@ jobs:
           example : 2 ^ 100 = 1267650600228229401496703205376 := rfl
           EOF
           node wasm-llvm/producer/lean-browser/scripts/run-lean.mjs \
-            wasm-foundry/work/dist/lean.mjs work/probe work/olean32 -- \
+            work/dist/lean.mjs work/probe work/olean32 -- \
             -j1 -R /src -o /src/Probe.olean /src/Probe.lean
           ls -l work/probe/Probe.olean
           echo -n "wasm contains LEAN_WASM_ERR: "; grep -c 'LEAN_WASM_ERR' work/dist/lean.wasm

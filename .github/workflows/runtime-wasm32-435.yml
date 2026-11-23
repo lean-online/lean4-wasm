@@ -344,7 +344,7 @@ jobs:
           mkdir -p work/mini
           printf 'import Init\nexample : 1 + 1 = 2 := rfl\n' > work/mini/Mini.lean
           node wasm-llvm/producer/lean-browser/scripts/run-lean.mjs \
-            wasm-foundry/work/dist/lean.mjs work/mini work/olean32 -- \
+            work/dist/lean.mjs work/mini work/olean32 -- \
             -j1 -R /src -o /src/Mini.olean /src/Mini.lean 2>&1 | tee work/mini.log
           test -s work/mini/Mini.olean || { echo '最小文件没有产出 olean'; exit 1; }
           echo '4.35 runtime + Init oleans 冒烟通过'
@@ -401,7 +401,7 @@ jobs:
           mkdir -p work/std-src
           printf 'import Std\nexample : 1 + 1 = 2 := rfl\n' > work/std-src/Test.lean
           node wasm-llvm/producer/lean-browser/scripts/run-lean.mjs \
-            wasm-foundry/work/dist/lean.mjs work/std-src work/std-olean32 -- \
+            work/dist/lean.mjs work/std-src work/std-olean32 -- \
             -j1 -R /src -o /src/Test.olean /src/Test.lean
           test -s work/std-src/Test.olean
 
@@ -496,7 +496,7 @@ jobs:
           mkdir -p work/batteries-src
           printf 'import Batteries\nexample : 1 + 1 = 2 := rfl\n' > work/batteries-src/Test.lean
           node wasm-llvm/producer/lean-browser/scripts/run-lean.mjs \
-            wasm-foundry/work/dist/lean.mjs work/batteries-src work/batteries-olean32 -- \
+            work/dist/lean.mjs work/batteries-src work/batteries-olean32 -- \
             -j1 -R /src -o /src/Test.olean /src/Test.lean
           test -s work/batteries-src/Test.olean
 
@@ -660,13 +660,13 @@ jobs:
           fi
           if [ "$PUBLISH_SCOPE" = "all" ]; then
             gh release upload "$TAG" \
-              wasm-foundry/work/artifact/lean.mjs \
-              wasm-foundry/work/artifact/producer-receipt.json \
-              wasm-foundry/work/artifact/lean-init.index.json \
-              wasm-foundry/work/artifact/*.gz \
-              wasm-foundry/work/artifact/*.gz.bin \
-              wasm-foundry/work/artifact/runtime-manifest.json \
-              wasm-foundry/work/artifact/SHA256SUMS \
+              work/artifact/lean.mjs \
+              work/artifact/producer-receipt.json \
+              work/artifact/lean-init.index.json \
+              work/artifact/*.gz \
+              work/artifact/*.gz.bin \
+              work/artifact/runtime-manifest.json \
+              work/artifact/SHA256SUMS \
               scripts/assets/runner-worker.js \
               --clobber
           fi
