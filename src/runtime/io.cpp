@@ -1257,7 +1257,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_hard_link(b_obj_arg orig, b_obj_arg link)
 }
 
 /* createTempFile : IO (Handle × FilePath) */
-extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile(lean_object * /* w */) {
+extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile() {
     char path[PATH_MAX];
     size_t base_len = PATH_MAX;
     int ret = uv_os_tmpdir(path, &base_len);
@@ -1303,7 +1303,7 @@ extern "C" LEAN_EXPORT obj_res lean_io_create_tempfile(lean_object * /* w */) {
 }
 
 /* createTempDir : IO FilePath */
-extern "C" LEAN_EXPORT obj_res lean_io_create_tempdir(lean_object * /* w */) {
+extern "C" LEAN_EXPORT obj_res lean_io_create_tempdir() {
     char path[PATH_MAX];
     size_t base_len = PATH_MAX;
     int ret = uv_os_tmpdir(path, &base_len);
@@ -1384,24 +1384,10 @@ extern "C" LEAN_EXPORT obj_res lean_io_app_path() {
         return io_result_mk_error("failed to resolve symbolic links when locating application");
     return io_result_mk_ok(mk_string(buf2));
 #elif defined(LEAN_EMSCRIPTEN)
-    // See https://emscripten.org/docs/api_reference/emscripten.h.html#c.EM_ASM_INT
-    char* appPath = reinterpret_cast<char*>(EM_ASM_INT({
-        if ((typeof process === "undefined") || (process.release.name !== "node")) {
-            return 0;
-        }
-
-        var lengthBytes = lengthBytesUTF8(__filename)+1;
-        var pathOnWasmHeap = _malloc(lengthBytes);
-        stringToUTF8(__filename, pathOnWasmHeap, lengthBytes);
-        return pathOnWasmHeap;
-    }));
-    if (appPath == nullptr) {
-        return io_result_mk_error("no Lean executable file exists in WASM outside of Node.js");
-    }
-
-    object * appPathLean = mk_string(appPath);
-    free(appPath);
-    return io_result_mk_ok(appPathLean);
+    // wasm-llvm/lean-browser: the browser build has no host executable path, so the
+    // toolchain lives at a fixed virtual prefix. The embedder provides the standard
+    // library under /lean/lib/lean in the Emscripten file system.
+    return io_result_mk_ok(mk_string("/lean/bin/lean"));
 #else
     // Linux version
     char path[PATH_MAX];

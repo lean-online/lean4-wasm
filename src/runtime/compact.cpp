@@ -100,6 +100,10 @@ LEAN_EXPORT std::vector<lib_info> get_loaded_libs() {
         if (!name) continue;
         libs.push_back({reinterpret_cast<size_t>(hdr), name});
     }
+#elif defined(LEAN_EMSCRIPTEN)
+    // Statically linked Emscripten builds have a single module whose function pointers are
+    // table indices; there is no dynamic loader to enumerate.
+    libs.push_back({0, ""});
 #else
     // Linux: use dl_iterate_phdr
     dl_iterate_phdr([](struct dl_phdr_info * info, size_t, void * data) -> int {

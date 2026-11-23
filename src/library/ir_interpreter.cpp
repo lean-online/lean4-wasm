@@ -338,8 +338,16 @@ void print_value(tout const & ios, value const & v, type t) {
   return print_value(const_cast<tout &>(ios), v, t);
 }
 
+#ifdef LEAN_EMSCRIPTEN
+// wasm-llvm/lean-browser: statically linked browser builds have no dynamic symbol table,
+// so the build generates a sorted table of every exported Lean symbol (see symtab generator).
+extern "C" void * lean_emscripten_lookup_symbol(char const * sym);
+#endif
+
 void * lookup_symbol_in_cur_exe(char const * sym) {
-#ifdef LEAN_WINDOWS
+#if defined(LEAN_EMSCRIPTEN)
+    return lean_emscripten_lookup_symbol(sym);
+#elif defined(LEAN_WINDOWS)
     std::vector<HMODULE> hmods(128);
     DWORD bytes_needed;
     lean_always_assert(EnumProcessModules(GetCurrentProcess(), &hmods[0], hmods.size() * sizeof(HMODULE), &bytes_needed));
@@ -1208,7 +1216,7 @@ extern "C" LEAN_EXPORT obj_res lean_run_mod_init_core(b_obj_arg  sym) {
     }
 }
 
-extern "C" LEAN_EXPORT object * lean_run_init(object * env, object * opts, object * decl, object * init_decl, object *) {
+extern "C" LEAN_EXPORT object * lean_run_init(object * env, object * opts, object * decl, object * init_decl) {
     return interpreter::with_interpreter<object *>(TO_REF(elab_environment, env), TO_REF(options, opts), TO_REF(name, decl), [&](interpreter & interp) {
         return interp.run_init(TO_REF(name, decl), TO_REF(name, init_decl));
     });

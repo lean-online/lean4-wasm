@@ -214,10 +214,16 @@ int run_shell_main(int argc, char* argv[], object_ref const & shell_opts) {
         argc--;
         args = list_ref<string_ref>(string_ref(argv[argc]), args);
     }
-    return get_io_scalar_result<uint32>(lean_shell_main(
+    object * r = lean_shell_main(
         args.steal(),
         shell_opts.to_obj_arg()
-    ));
+    );
+    // wasm-llvm/lean-browser: `UInt32` is boxed in a constructor on 32-bit targets, so the
+    // generic scalar unboxing in `get_io_scalar_result` returns a pointer-derived exit code.
+    if (io_result_is_error(r)) return get_io_scalar_result<uint32>(r);
+    uint32 rc = lean_unbox_uint32(io_result_get_value(r));
+    dec(r);
+    return rc;
 }
 
 extern "C" object* lean_init_search_path();
@@ -285,9 +291,11 @@ extern "C" LEAN_EXPORT int lean_main(int argc, char ** argv) {
 #ifdef LEAN_EMSCRIPTEN
     // When running in command-line mode under Node.js, we make system directories available in the virtual filesystem.
     // This mode is used to compile 32-bit oleans.
+    // wasm-llvm/lean-browser: in a browser Worker the embedder prepares the virtual file system
+    // (library under /lean/lib/lean, program in MEMFS), so only the Node.js host mounts remain.
     EM_ASM(
-        if ((typeof process === "undefined") || (process.release.name !== "node")) {
-            throw new Error("The Lean command-line driver can only run under Node.js. For the embeddable WASM library, see lean_wasm.cpp.");
+        if ((typeof process === "undefined") || !process.release || (process.release.name !== "node")) {
+            return;
         }
 
         var lean_path = process.env["LEAN_PATH"];
