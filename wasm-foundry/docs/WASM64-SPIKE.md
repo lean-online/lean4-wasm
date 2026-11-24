@@ -41,10 +41,10 @@ pnpm run typecheck
 pnpm run test:coverage
 ```
 
-Actions 中的行为硬基准为 [scripts/wasm64-patch-equivalence.ts](../scripts/wasm64-patch-equivalence.ts)：同一语料对比官方原生 Lean 与编译后的 `wasm64`，校验归一化 stdout 逐字节一致。
+Actions 中的行为硬基准为 [scripts/wasm64-patch-equivalence.ts](../scripts/wasm64-patch-equivalence.ts) 与 [native-consistency-gate.yml](../../.github/workflows/native-consistency-gate.yml) 组成的 **5 层一致性门禁 + 双独立检验器**（官方 `tests/elab` + `tests/elab_fail` 全量回归、固定种子 `Expr`/WHNF Fuzzing、反向报错拒绝集、`leanchecker` + `leanexport` / Rust `nanoda_bin` 双核交叉审计、C 导出符号表 ABI Diff 与 [DIVERGENCES.md](DIVERGENCES.md) 显式登记簿；详见 [DECISIONS.md](DECISIONS.md#adr-03)）。
 
-- **容忍边界**：仅允许「退出期已知 trap」（stderr 命中 `emscripten_builtin_free` / `lean_dec_ref_cold` 且 stdout 逐字节一致，重跑复现才降级告警）及 `IO.Process.exit` 退出码差异（worker `DataCloneError` 已知限制）。
-- **红线**：任意 stdout 差异或栈溢出（`Maximum call stack size exceeded`）必须直接失败。
+- **容忍边界**：仅允许「退出期已知 trap」（stderr 命中 `emscripten_builtin_free` / `lean_dec_ref_cold` 且 stdout/产物逐字节一致，重跑复现才降级告警）、`IO.Process.exit` 退出码差异（worker `DataCloneError` 已知限制）以及 [DIVERGENCES.md](DIVERGENCES.md) 中显式登记并验证边界的有意差异（如 `DIV-001`）。
+- **红线**：任意未登记行为差异、反向用例误放行（`status=0`）、C 公开/跨模块符号 ABI 破坏、双独立检验器拒绝或栈溢出（`Maximum call stack size exceeded`）必须直接失败。
 
 ## 现行浏览器侧关键机制与待收口项
 
