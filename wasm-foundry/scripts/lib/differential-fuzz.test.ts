@@ -54,6 +54,34 @@ describe('differential-fuzz (Layer 2)', () => {
     }
   });
 
+  it('count=300（6 个批次）时所有 fuzzExprBatch 均定义在 buildFuzzExprs 之前且无嵌套 def', () => {
+    const src = buildExprDagFuzzSection(DEFAULT_FUZZ_SEED, 300);
+    const buildIdx = src.indexOf('private def buildFuzzExprs');
+    const runIdx = src.indexOf('private def runExprDagFuzz');
+    expect(buildIdx).toBeGreaterThan(0);
+    expect(runIdx).toBeGreaterThan(buildIdx);
+
+    const buildBody = src.slice(buildIdx + 'private def buildFuzzExprs'.length, runIdx);
+    expect(buildBody).not.toContain('private def');
+
+    for (let k = 0; k < 6; k += 1) {
+      const defMarker = `private def fuzzExprBatch${k}`;
+      const defIdx = src.indexOf(defMarker);
+      expect(defIdx).toBeGreaterThanOrEqual(0);
+      expect(defIdx).toBeLessThan(buildIdx);
+      expect(buildBody).toContain(`fuzzExprBatch${k} fv`);
+    }
+  });
+
+  it('buildFuzzDifferentialCorpus 关闭 unusedVariables linter 警告', () => {
+    const src = buildFuzzDifferentialCorpus({
+      seed: DEFAULT_FUZZ_SEED,
+      exprCases: 60,
+      whnfCases: 60,
+    });
+    expect(src).toContain('set_option linter.unusedVariables false');
+  });
+
   it('buildWhnfConfigFuzzSection 覆盖所有 TransparencyMode 与 ProjReductionKind', () => {
     const specs = generateWhnfFuzzSpecs(DEFAULT_FUZZ_SEED, 40);
     expect(specs).toHaveLength(40);

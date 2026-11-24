@@ -103,12 +103,8 @@ export const buildExprDagFuzzSection = (seed: number, count: number): string => 
   }
 
   const batches = chunkArray(caseExprs, BATCH_SIZE);
-  const lines: string[] = [
-    `-- Expr DAG Fuzz Section (seed=${seed}, count=${count})`,
-    'private def buildFuzzExprs (fv : Expr) : List Expr :=',
-    '  Id.run do',
-    '    let mut acc : Array Expr := #[]',
-  ];
+  const batchDefs: string[] = [];
+  const accLines: string[] = [];
 
   batches.forEach((batch, batchIdx) => {
     const fnName = `fuzzExprBatch${batchIdx}`;
@@ -119,19 +115,23 @@ export const buildExprDagFuzzSection = (seed: number, count: number): string => 
       })
       .join('\n');
     const items = batch.map((_, offset) => `e${batchIdx * BATCH_SIZE + offset}`).join(', ');
-    lines.splice(
-      lines.length - 3,
-      0,
+    batchDefs.push(
       `private def ${fnName} (fv : Expr) : List Expr :=`,
       '  Id.run do',
       body,
       `    return [${items}]`,
       '',
     );
-    lines.push(`    acc := acc ++ (${fnName} fv).toArray`);
+    accLines.push(`    acc := acc ++ (${fnName} fv).toArray`);
   });
 
-  lines.push(
+  const lines: string[] = [
+    `-- Expr DAG Fuzz Section (seed=${seed}, count=${count})`,
+    ...batchDefs,
+    'private def buildFuzzExprs (fv : Expr) : List Expr :=',
+    '  Id.run do',
+    '    let mut acc : Array Expr := #[]',
+    ...accLines,
     '    return acc.toList',
     '',
     'private def runExprDagFuzz : MetaM Unit := do',
@@ -148,7 +148,7 @@ export const buildExprDagFuzzSection = (seed: number, count: number): string => 
     '',
     '#eval show MetaM Unit from runExprDagFuzz',
     '',
-  );
+  ];
 
   return lines.join('\n');
 };
@@ -285,6 +285,7 @@ export const buildFuzzDifferentialCorpus = (options: FuzzCorpusOptions = {}): st
   const whnfCases = options.whnfCases ?? DEFAULT_WASM_FUZZ_CASES;
   return [
     'import Lean',
+    'set_option linter.unusedVariables false',
     '',
     'open Lean Lean.Meta',
     '',

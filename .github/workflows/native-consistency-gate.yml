@@ -76,6 +76,8 @@ jobs:
     name: 第 1/2/3/5 层 · 原生全量回归与双检验器
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -120,39 +122,61 @@ jobs:
           echo "bin=$NANODA_BIN" >> "$GITHUB_OUTPUT"
           ls -l "$NANODA_BIN"
 
-      - name: 缓存原生构建 ccache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: 恢复原生构建 ccache
+        id: ccache_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/.ccache
+          path: ~/.cache/ccache
           key: native-ccache-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/kernel/**', 'src/runtime/**', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean') }}
           restore-keys: |
             native-ccache-v1-
 
+      - name: 恢复软 Fork 原生 Stage 1 构建产物缓存
+        id: stage1_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build-native
+          key: native-stage1-v1-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/CMakeLists.txt', 'wasm-foundry/scripts/pin-lean.ts') }}
+
       - name: 构建软 Fork 原生 Stage 1（复用官方引导包）
         id: native_build
         run: |
-          ccache -M 4G
-          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-native" \
-            -G "Unix Makefiles" \
-            -DSTAGE1_PREV_STAGE="${{ steps.boot.outputs.dir }}" \
-            -DLEAN_GITHASH_OVERRIDE="${{ steps.boot.outputs.commit }}" \
-            -DLEAN_HEADER_SNAPSHOTS=ON \
-            -DWFAIL=OFF \
-            -DSTRIP_BINARIES=OFF \
-            -DUSE_GMP=ON \
-            -DUSE_MIMALLOC=OFF \
-            -DLLVM=OFF
-          cmake --build "$GITHUB_WORKSPACE/build-native" --target stage1 -j"$(nproc)"
+          if [ "${{ steps.stage1_cache.outputs.cache-hit }}" = "true" ] \
+            && [ -x "$GITHUB_WORKSPACE/build-native/stage1/bin/lean" ] \
+            && [ -f "$GITHUB_WORKSPACE/build-native/stage1/CTestTestfile.cmake" ]; then
+            echo "命中原生 Stage 1 构建产物缓存，跳过 CMake 编译。"
+          else
+            ccache -M 4G
+            cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-native" \
+              -G "Unix Makefiles" \
+              -DSTAGE1_PREV_STAGE="${{ steps.boot.outputs.dir }}" \
+              -DLEAN_GITHASH_OVERRIDE="${{ steps.boot.outputs.commit }}" \
+              -DLEAN_HEADER_SNAPSHOTS=ON \
+              -DWFAIL=OFF \
+              -DSTRIP_BINARIES=OFF \
+              -DUSE_GMP=ON \
+              -DUSE_MIMALLOC=OFF \
+              -DLLVM=OFF
+            cmake --build "$GITHUB_WORKSPACE/build-native" --target stage1 -j"$(nproc)"
+            ccache -s || true
+          fi
           "$GITHUB_WORKSPACE/build-native/stage1/bin/lean" --version
-          ccache -s || true
 
       - name: 立即保存原生构建 ccache
-        if: always() && steps.native_build.outcome == 'success'
+        if: always() && steps.ccache_cache.outputs.cache-hit != 'true' && steps.stage1_cache.outputs.cache-hit != 'true' && steps.native_build.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          path: ~/.ccache
+          path: ~/.cache/ccache
           key: native-ccache-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/kernel/**', 'src/runtime/**', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean') }}
+
+      - name: 立即保存软 Fork 原生 Stage 1 构建产物缓存
+        if: always() && steps.stage1_cache.outputs.cache-hit != 'true' && steps.native_build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: build-native
+          key: native-stage1-v1-${{ hashFiles('CMakeLists.txt', 'src/**', 'tests/CMakeLists.txt', 'wasm-foundry/scripts/pin-lean.ts') }}
 
       - name: 第 2/3/5 层 · 原生差分 Fuzzing (300 组) + 反向拒绝集 + 双独立检验器
         working-directory: wasm-foundry
