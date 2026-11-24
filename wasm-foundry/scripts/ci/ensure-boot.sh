@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT="${1:?usage: ensure-boot.sh <foundryRoot>}"
-PIN_JSON="$(node -e 'import(process.argv[1]).then((m) => process.stdout.write(JSON.stringify(m.resolveLeanPin())))' "$ROOT/scripts/pin-lean.ts")"
+PIN_JSON="$(FOUNDRY_ROOT="$ROOT" node --input-type=module -e 'import { resolve } from "node:path"; import { pathToFileURL } from "node:url"; const m = await import(pathToFileURL(resolve(process.env.FOUNDRY_ROOT, "scripts/pin-lean.ts")).href); process.stdout.write(JSON.stringify(m.resolveLeanPin()));')"
 read -r VERSION COMMIT URL SHA <<<"$(node -e 'const p = JSON.parse(process.argv[1]); process.stdout.write([p.version, p.commit, p.bootstrapUrl, p.bootstrapSha256].join(" "))' "$PIN_JSON")"
 
 WORK="$ROOT/work"
