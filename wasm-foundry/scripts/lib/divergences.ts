@@ -73,6 +73,12 @@ export const buildDivergenceBoundaryCorpus = (): DivergenceBoundaryCorpus => ({
   expectedForkMarker: 'div_001_boundary_ok',
 });
 
+/** 从 INTENTIONAL_DIVERGENCES 拼装传给 `ctest -E` 的转义正则片段（供 CI 直接复用，避免 shell 内联正则转义出错）。 */
+export const buildUpstreamTestExcludeRegex = (): string =>
+  INTENTIONAL_DIVERGENCES.flatMap((entry) => entry.expectedUpstreamTestDivergences)
+    .map((relPath) => relPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+
 /** 从 DIVERGENCES.md 提取形如 `## DIV-001: ...` 的已记录差异编号。 */
 export const extractDocumentedDivergenceIds = (markdown: string): string[] => {
   const ids: string[] = [];

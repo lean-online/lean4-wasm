@@ -5,6 +5,7 @@ import {
   INTENTIONAL_DIVERGENCES,
   assertDivergenceRegistrySynced,
   buildDivergenceBoundaryCorpus,
+  buildUpstreamTestExcludeRegex,
   extractDocumentedDivergenceIds,
 } from './divergences.ts';
 
@@ -39,5 +40,11 @@ describe('divergences registry (Layer 5)', () => {
     expect('error: maximum recursion depth has been reached').toMatch(
       boundary.expectedBootErrorPattern,
     );
+  });
+
+  it('buildUpstreamTestExcludeRegex 转义并拼接受有意差异影响的上游用例路径', () => {
+    const regexStr = buildUpstreamTestExcludeRegex();
+    expect(regexStr).toBe('elab/simpLoopProtection\\.lean|elab/simpDiag\\.lean');
+    expect('elab/simpLoopProtection.lean').toMatch(new RegExp(`^(${regexStr})$`));
   });
 });
