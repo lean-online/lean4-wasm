@@ -11,7 +11,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import {
   CliError,
   optionalString,
@@ -236,9 +236,17 @@ export const runDualCheckerSuite = (
   exec: ExecCommandFn = defaultExecCommand,
 ): DualCheckerReport => {
   const workDir = mkdtempSync(join(tmpdir(), 'dual-checker-'));
+  const toolPath = options.leanchecker ?? options.leanexport;
+  const bootBinDir = toolPath ? dirname(toolPath) : undefined;
+  const bootSysroot =
+    bootBinDir && basename(bootBinDir) === 'bin' ? dirname(bootBinDir) : undefined;
   const leanPathEnv: NodeJS.ProcessEnv = {
     ...process.env,
     LEAN_PATH: `${options.oleanDir}${delimiter}${options.bootLib}`,
+    ...(bootSysroot === undefined ? {} : { LEAN_SYSROOT: bootSysroot }),
+    ...(bootBinDir === undefined
+      ? {}
+      : { PATH: `${bootBinDir}${delimiter}${process.env.PATH ?? ''}` }),
   };
 
   let leancheckerFreshPassed = false;

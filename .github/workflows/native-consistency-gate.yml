@@ -129,6 +129,7 @@ jobs:
             native-ccache-v1-
 
       - name: 构建软 Fork 原生 Stage 1（复用官方引导包）
+        id: native_build
         run: |
           ccache -M 4G
           cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-native" \
@@ -144,6 +145,14 @@ jobs:
           cmake --build "$GITHUB_WORKSPACE/build-native" --target stage1 -j"$(nproc)"
           "$GITHUB_WORKSPACE/build-native/stage1/bin/lean" --version
           ccache -s || true
+
+      - name: 立即保存原生构建 ccache
+        if: always() && steps.native_build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.ccache
+          key: native-ccache-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/kernel/**', 'src/runtime/**', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean') }}
 
       - name: 第 2/3/5 层 · 原生差分 Fuzzing (300 组) + 反向拒绝集 + 双独立检验器
         working-directory: wasm-foundry

@@ -45,7 +45,7 @@ describe('verify-dual-checkers (Layer 3B)', () => {
   });
 
   it('runDualCheckerSuite 串联 C++ leanchecker + leanexport + Rust nanoda_bin 与 sorry 反例校验', () => {
-    const calls: Array<{ cmd: string; args: readonly string[] }> = [];
+    const calls: Array<{ cmd: string; args: readonly string[]; env?: NodeJS.ProcessEnv }> = [];
     const report = runDualCheckerSuite(
       {
         oleanDir: '/tmp/oleans',
@@ -60,8 +60,8 @@ describe('verify-dual-checkers (Layer 3B)', () => {
         externalCheckerCmd: '/tmp/bin/custom-checker',
         timeoutMs: 30_000,
       },
-      (cmd, args) => {
-        calls.push({ cmd, args });
+      (cmd, args, opts) => {
+        calls.push({ cmd, args, env: opts.env });
         if (cmd === '/tmp/bin/leanexport') {
           return { status: 0, stdout: '{"meta":{}}\n', stderr: '' };
         }
@@ -80,11 +80,12 @@ describe('verify-dual-checkers (Layer 3B)', () => {
       negativeAxiomRejected: true,
       externalCheckerPassed: true,
     });
-    expect(calls[0]).toEqual({ cmd: '/tmp/bin/leanchecker', args: ['--fresh', 'CertProofs'] });
-    expect(calls[1]).toEqual({
-      cmd: '/tmp/bin/leanexport',
-      args: ['CertProofs', '--', ...CERT_THEOREM_NAMES],
-    });
+    expect(calls[0]?.cmd).toBe('/tmp/bin/leanchecker');
+    expect(calls[0]?.args).toEqual(['--fresh', 'CertProofs']);
+    expect(calls[0]?.env?.LEAN_SYSROOT).toBe('/tmp');
+    expect(calls[0]?.env?.PATH?.startsWith('/tmp/bin')).toBe(true);
+    expect(calls[1]?.cmd).toBe('/tmp/bin/leanexport');
+    expect(calls[1]?.args).toEqual(['CertProofs', '--', ...CERT_THEOREM_NAMES]);
     expect(calls[2]?.cmd).toBe('/tmp/bin/leanchecker');
     expect(calls[2]?.args[0]).toBe('--from-export');
     expect(calls[3]?.cmd).toBe('/tmp/bin/nanoda_bin');
