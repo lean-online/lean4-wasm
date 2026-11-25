@@ -1373,12 +1373,14 @@ jobs:
               ...manifest.assets,
               ...(manifest.extensions || []).flatMap((extension) => extension.assets),
             ];
-            // 按 asset.key 落盘：扩展包在 <prefix>/extensions/<id>/ 下，不能平铺到 prefix 根。
+            // ADR-01：ModelScope 统一采用 <prefix>/<asset.name> 扁平目录结构，与前端 asset-sources.mjs 对齐。
+            const seenNames = new Set();
             for (const asset of allAssets) {
-              if (!asset.key.startsWith(`${prefix}/`)) {
-                throw new Error(`asset key ${asset.key} 不在 mirror prefix ${prefix} 下`);
+              if (seenNames.has(asset.name)) {
+                throw new Error(`modelscope 扁平布局出现重名资产: ${asset.name}`);
               }
-              const target = path.join(work, asset.key);
+              seenNames.add(asset.name);
+              const target = path.join(work, prefix, asset.name);
               fs.mkdirSync(path.dirname(target), { recursive: true });
               fs.copyFileSync(path.join("./runtime", asset.source), target);
             }
