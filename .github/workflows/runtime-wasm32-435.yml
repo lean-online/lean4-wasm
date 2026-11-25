@@ -549,6 +549,7 @@ jobs:
         working-directory: wasm-foundry
     permissions:
       contents: write
+      actions: read
     env:
       PUBLISH_TARGET: ${{ github.event_name == 'push' && 'both' || inputs.publish }}
       PUBLISH_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_scope || 'all' }}
