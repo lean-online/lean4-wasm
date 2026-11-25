@@ -116,7 +116,8 @@ jobs:
         id: audit
         run: |
           set -euo pipefail
-          TAG="$(node -e 'import("./wasm-foundry/scripts/pin-lean.ts").then((m) => process.stdout.write(`v${m.resolveLeanPin().version}`))')"
+          # 用字符串拼接而不是 JS 模板字符串：单引号里的 ${...} 会被 shellcheck 报 SC2016。
+          TAG="$(node -e 'import("./wasm-foundry/scripts/pin-lean.ts").then((m) => process.stdout.write("v" + m.resolveLeanPin().version))')"
           # tag 已在 clone 里就直接用；否则只拉这一个 tag（浅克隆即可算 tree diff）。
           if ! git rev-parse --verify -q "refs/tags/${TAG}" > /dev/null; then
             git fetch --no-tags --depth 1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
