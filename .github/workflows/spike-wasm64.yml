@@ -82,6 +82,8 @@ jobs:
     timeout-minutes: 15
     outputs:
       run_build: ${{ steps.dedup.outputs.run_build }}
+      tier: ${{ steps.audit.outputs.tier }}
+      lean_core_changed: ${{ steps.audit.outputs.lean_core_changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -107,6 +109,25 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
+
+      # Issue #83：把「相对上游 tag 改了什么」透明化，并按改动层级给出该跑哪一档门禁。
+      # 纯 git + node，不装依赖，几秒内完成；结果写进 Actions Summary，PR 审阅时直接可见。
+      - name: 软 Fork Diff 审计（相对上游 tag）
+        id: audit
+        run: |
+          set -euo pipefail
+          TAG="$(node -e 'import("./wasm-foundry/scripts/pin-lean.ts").then((m) => process.stdout.write(`v${m.resolveLeanPin().version}`))')"
+          # tag 已在 clone 里就直接用；否则只拉这一个 tag（浅克隆即可算 tree diff）。
+          if ! git rev-parse --verify -q "refs/tags/${TAG}" > /dev/null; then
+            git fetch --no-tags --depth 1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          fi
+          git rev-parse --verify -q "refs/tags/${TAG}" > /dev/null || {
+            echo "::error::拿不到上游 tag ${TAG}"
+            exit 1
+          }
+          node wasm-foundry/scripts/ci/audit-upstream-diff.ts \
+            --tag "$TAG" --repo . \
+            --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT" 
 
       - name: 安装依赖
         working-directory: wasm-foundry
