@@ -162,6 +162,34 @@ describe('slice', () => {
     const written = JSON.parse(readFileSync(manifest, 'utf8'));
     expect(written.targets).toEqual(['Mathlib.A', 'Mathlib.B']);
   });
+  it('闭包触及的包会扩到整包（包内私有 aux 名字必须同源）', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mathlib-slice-pkg-'));
+    mkdirSync(join(root, 'pkgA', 'A'), { recursive: true });
+    mkdirSync(join(root, 'pkgB', 'B'), { recursive: true });
+    writeFileSync(join(root, 'pkgA', 'A', 'Main.lean'), 'import B.Main\n');
+    writeFileSync(join(root, 'pkgA', 'A', 'Extra.lean'), '');
+    writeFileSync(join(root, 'pkgB', 'B', 'Main.lean'), '');
+    writeFileSync(join(root, 'pkgB', 'B', 'Other.lean'), '');
+    const out = join(root, 'out');
+    const manifest = join(root, 'slice.json');
+    const result = slice({ root, targets: ['A.Main'], out, manifest });
+    // 触及的包（A 与 B）都扩到整包：A.Extra / B.Other 没被 import 也得一起重编，
+    // 否则同一个包里会混着不同批次的私有 aux 名字。未触及的包（本树里没有）保持缓存。
+    // 顺序由第二遍 DFS 重新拓扑排序，依赖仍然先于依赖者。
+    expect(result?.modules).toEqual(['A.Extra', 'B.Main', 'A.Main', 'B.Other']);
+    expect(readFileSync(join(out, 'A', 'Extra.lean'), 'utf8')).toBe('');
+  });
+
+  it('扩包后超过 --max 时保留原闭包（不静默超预算）', () => {
+    const root = mkdtempSync(join(tmpdir(), 'mathlib-slice-pkg-max-'));
+    mkdirSync(join(root, 'pkgA', 'A'), { recursive: true });
+    writeFileSync(join(root, 'pkgA', 'A', 'Main.lean'), '');
+    writeFileSync(join(root, 'pkgA', 'A', 'Extra.lean'), '');
+    const out = join(root, 'out');
+    const manifest = join(root, 'slice.json');
+    const result = slice({ root, targets: ['A.Main'], out, manifest, max: 1 });
+    expect(result?.modules).toEqual(['A.Main']);
+  });
 });
 
 describe('collectClosures', () => {

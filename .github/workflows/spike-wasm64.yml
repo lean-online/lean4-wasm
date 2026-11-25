@@ -920,15 +920,15 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: wasm-foundry/work/mathlib-lib
-          key: wasm64-mathlib-lib3-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}-${{ github.run_number }}
+          key: wasm64-mathlib-lib4-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/include/lean/lean.h', 'src/kernel/replace_fn.cpp', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean', 'src/runtime/**') }}-${{ github.run_number }}
           restore-keys: |
-            wasm64-mathlib-lib3-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}-
+            wasm64-mathlib-lib4-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/include/lean/lean.h', 'src/kernel/replace_fn.cpp', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean', 'src/runtime/**') }}-
 
       # 每个文件单独起一次 wasm64 进程：EXIT_RUNTIME=1 之后同一实例不能复用。
       # 已编译的 olean 直接跳过，配合缓存可以逐轮补齐。
       - name: 编译 Mathlib 裁切（wasm64）
         continue-on-error: true
-        timeout-minutes: 240
+        timeout-minutes: 300
         run: |
           set -uo pipefail
           if [ ! -f work/mathlib-slice.json ]; then echo "没有裁切结果，跳过"; exit 0; fi
@@ -940,6 +940,37 @@ jobs:
             cp -a work/olean32/. work/mathlib-lib/
           fi
           mkdir -p work/mathlib-log
+
+          # 包级原子性：私有 / auxiliary 名字带编译器状态 hash，同一个包里既有旧缓存又有新编译时，
+          # import 会在 initFn 里抛 unknown declaration（Issue #77 实测：
+          # ImportGraph.Shake 命中缓存、ImportGraph.Shake.DeclNeeds 被重编）。
+          # 因此只要某个包不是「全命中」或「全缺失」，就整包删掉重编。
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const { modules } = JSON.parse(fs.readFileSync('work/mathlib-slice.json', 'utf8'));
+          const core = new Set(['Init', 'Std', 'Lean', 'Lake']);
+          const byPackage = new Map();
+          for (const module of modules) {
+            const pkg = module.split('.')[0];
+            if (!byPackage.has(pkg)) byPackage.set(pkg, []);
+            byPackage.get(pkg).push(module);
+          }
+          const mixed = [];
+          for (const [pkg, list] of [...byPackage].sort(([a], [b]) => a.localeCompare(b))) {
+            const hit = list.filter((m) =>
+              fs.existsSync(`work/mathlib-lib/${m.replaceAll('.', '/')}.olean`),
+            ).length;
+            const state = hit === list.length ? 'cached' : hit === 0 ? 'rebuild' : 'MIXED';
+            console.log(`${pkg}: ${hit}/${list.length} ${state}`);
+            if (state === 'MIXED' && !core.has(pkg)) mixed.push(`work/mathlib-lib/${pkg}`);
+          }
+          fs.writeFileSync('work/mathlib-mixed-pkgs.txt', mixed.join('\n') + (mixed.length ? '\n' : ''));
+          if (mixed.length) console.log(`::warning::包内混编，整包重编: ${mixed.join(', ')}`);
+          NODE
+          if [ -s work/mathlib-mixed-pkgs.txt ]; then
+            xargs -r rm -rf < work/mathlib-mixed-pkgs.txt
+          fi
+
           RUN=wasm-llvm/producer/lean-browser/scripts/run-lean.mjs
           node -e 'for (const m of require("./work/mathlib-slice.json").modules) console.log(m)' > work/mathlib-modules.txt
           total=0
@@ -985,7 +1016,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: wasm-foundry/work/mathlib-lib
-          key: wasm64-mathlib-lib3-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}-${{ github.run_number }}-${{ github.run_attempt }}
+          key: wasm64-mathlib-lib4-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts', 'src/CMakeLists.txt', 'src/include/lean/lean.h', 'src/kernel/replace_fn.cpp', 'src/Lean/Meta/WHNF.lean', 'src/Lean/Meta/Tactic/Simp/Main.lean', 'src/runtime/**') }}-${{ github.run_number }}-${{ github.run_attempt }}
 
       # 门禁：Mathlib 裁切的目标模块必须真的产出 olean。编译步本身 continue-on-error，
       # 是为了让诊断链路那一步还能跑；这里才是整轮是否成功的判据。

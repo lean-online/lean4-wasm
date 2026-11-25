@@ -231,6 +231,30 @@ export const slice = (
     closure = { order: best.order, externals: best.externals };
   }
 
+  // 包级原子性：wasm64 产物的私有 / auxiliary 名字带编译器状态 hash。同一个包里如果只有一部分
+  // 模块被重编、其余命中旧缓存，两类 olean 混在一起会让 initFn 在 import 时抛 unknown declaration
+  // （实测：ImportGraph.Shake 用缓存、ImportGraph.Shake.DeclNeeds 重编）。所以把闭包扩到整包，
+  // 让编译步骤能以包为单位决定「全用缓存」还是「整包重编」。
+  const touchedPackages = new Set(closure.order.map((module) => module.split('.')[0]));
+  const packageWide = [...index.keys()].filter((module) =>
+    touchedPackages.has(module.split('.')[0]),
+  );
+  if (packageWide.length > closure.order.length) {
+    const expanded = collectClosures(index, packageWide, readSource);
+    if (expanded.order.length > max) {
+      log(
+        `package boundary: 需要 ${expanded.order.length} 个模块，超过上限 ${max}，保留原闭包 ` +
+          `${closure.order.length} 个（可能出现包内混编）`,
+      );
+    } else {
+      log(
+        `package boundary: ${closure.order.length} -> ${expanded.order.length} modules ` +
+          `(packages: ${[...touchedPackages].sort().join(',')})`,
+      );
+      closure = { order: expanded.order, externals: expanded.externals };
+    }
+  }
+
   for (const module of closure.order) {
     const source = index.get(module);
     if (source === undefined) throw new Error(`索引里没有 ${module}`);
