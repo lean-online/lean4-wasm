@@ -9,7 +9,7 @@ run-name: Runtime 4.35 · ${{ inputs.publish || 'build' }}
 # 只在手动触发和 runtime-v* tag 时运行；日常应用发布走 ci.yml。
 on:
   push:
-    tags: ['runtime-v*']
+    tags: ['runtime-v*', '!runtime-v*-wasm64']
   workflow_dispatch:
     inputs:
       publish:
@@ -649,7 +649,7 @@ jobs:
 
       - name: 发布 GitHub Release（回退源）
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           TAG="runtime-v${LEAN_VERSION}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then

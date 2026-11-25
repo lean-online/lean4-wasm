@@ -1402,7 +1402,7 @@ jobs:
 
       - name: 发布 GitHub Release（runtime-v<lean>-wasm64，归档与构建期使用）
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
         run: |
           set -euo pipefail
