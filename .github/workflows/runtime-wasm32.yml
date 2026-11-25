@@ -299,6 +299,10 @@ jobs:
 
       - name: 打包 4.36 发布资产（zstd + 清单）
         run: |
+          # 上游 package.mjs 会读 <work>/lean4/LICENSE（历史布局：源码 clone 进 work/lean4）。
+          # ADR-06 之后源码在仓根，这里补一份，保持上游脚本零改动。
+          mkdir -p work/lean4
+          cp "$GITHUB_WORKSPACE/LICENSE" work/lean4/LICENSE
           node wasm-llvm/producer/lean-browser/scripts/package.mjs --work work --out work/artifact
           node scripts/package-runtime-assets.mjs \
             --artifact work/artifact \
