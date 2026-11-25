@@ -599,34 +599,6 @@ jobs:
             wasm-foundry/work/artifact/SHA256SUMS
             wasm-foundry/config/lean4-runtime.json
 
-      - name: 发布 GitHub Release（回退源）
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-        run: |
-          TAG="runtime-v${LEAN_VERSION}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --target "$GITHUB_SHA" \
-              --latest=false \
-              --title "Lean ${LEAN_VERSION} wasm32 runtime" \
-              --notes "wasm32 runtime + Init oleans, packaged by GitHub Actions."
-          fi
-          if [ "$PUBLISH_SCOPE" = "all" ]; then
-            gh release upload "$TAG" \
-              work/artifact/lean.mjs \
-              work/artifact/producer-receipt.json \
-              work/artifact/lean-init.index.json \
-              work/artifact/*.gz \
-              work/artifact/*.gz.bin \
-              work/artifact/runtime-manifest.json \
-              work/artifact/SHA256SUMS \
-              scripts/assets/runner-worker.js \
-              --clobber
-          fi
-          if [ -d work/extensions/upload ] && ls work/extensions/upload/lean-* >/dev/null 2>&1; then
-            gh release upload "$TAG" work/extensions/upload/lean-* --clobber
-          fi
-
       - name: 上传 R2
         if: env.PUBLISH_TARGET == 'r2' || env.PUBLISH_TARGET == 'both'
         env:
@@ -667,6 +639,35 @@ jobs:
             pnpm run upload:modelscope -- --extensions work/extensions/upload --extensions-only --metadata
           else
             pnpm run upload:modelscope -- --extensions work/extensions/upload --metadata
+          fi
+
+      # 放在 R2 / 魔搭之后：Release 只是回退源，token 缺 contents:write 时不该拖累主链路。
+      - name: 发布 GitHub Release（回退源）
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          TAG="runtime-v${LEAN_VERSION}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --target "$GITHUB_SHA" \
+              --latest=false \
+              --title "Lean ${LEAN_VERSION} wasm32 runtime" \
+              --notes "wasm32 runtime + Init oleans, packaged by GitHub Actions."
+          fi
+          if [ "$PUBLISH_SCOPE" = "all" ]; then
+            gh release upload "$TAG" \
+              work/artifact/lean.mjs \
+              work/artifact/producer-receipt.json \
+              work/artifact/lean-init.index.json \
+              work/artifact/*.gz \
+              work/artifact/*.gz.bin \
+              work/artifact/runtime-manifest.json \
+              work/artifact/SHA256SUMS \
+              scripts/assets/runner-worker.js \
+              --clobber
+          fi
+          if [ -d work/extensions/upload ] && ls work/extensions/upload/lean-* >/dev/null 2>&1; then
+            gh release upload "$TAG" work/extensions/upload/lean-* --clobber
           fi
 
       - name: 发布摘要
