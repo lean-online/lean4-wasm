@@ -103,7 +103,9 @@ export const packageWasm64Runtime = (options: PackageWasm64Options): Wasm64Runti
   const wasmRawBytes = readFileSync(wasmFile);
   const wasmZstBytes = readFileSync(wasmZstFile);
 
-  const initFiles = collectOleanManifest(libDir, { roots: ['Init'] });
+  // 与 wasm32 对齐：Init 的 .ir / .ir.sig 也要打进基础包，否则解释器执行 initFn 时报
+  // `(interpreter) unknown declaration`。
+  const initFiles = collectOleanManifest(libDir, { roots: ['Init'], includeIr: true });
   if (initFiles.length === 0) {
     throw new CliError(`lib 目录缺少 Init olean: ${libDir}`);
   }

@@ -112,7 +112,10 @@ export const packageWasm64Extensions = (
 
   const extensions = spec.extensions.map((extension) => {
     const libDir = requireDir(extension.lib, `扩展 ${extension.id} 的 lib`);
-    const files = collectOleanManifest(libDir, { roots: extension.roots });
+    // includeIr 必须开：initFn 由 IR 解释器执行，没有 .ir / .ir.sig 时会抛
+    // `(interpreter) unknown declaration ...`（wasm32 的 package-runtime-extension.mjs
+    // 一直带这两个后缀，wasm64 之前漏了）。
+    const files = collectOleanManifest(libDir, { roots: extension.roots, includeIr: true });
     if (files.length === 0) {
       throw new CliError(
         `扩展 ${extension.id} 在 ${libDir} 的 roots=${extension.roots.join(',')} 下没有 olean`,

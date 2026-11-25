@@ -163,81 +163,133 @@ const verifyLocal = () => {
   console.log(`modelscope: 本地 ${selectedAssets.length} 个资产校验通过`);
 };
 
+// 远端校验的两类失败要区别对待（Issue #82）：
+//   not-ready：对象还没同步出来（404/5xx/Range 不符），值得等；
+//   cors：对象已经 200/206 且内容长度正确，只是缺 Access-Control-Allow-Origin —— 这是响应头/缓存
+//         配置问题，傻等 30 次只会白烧 2.5 分钟 × 资产数，连续几次就该快速失败。
+const NOT_READY = 'not-ready';
+const CORS_MISSING = 'cors';
+const FAILFAST_CORS_ATTEMPTS = 3;
+const VERIFY_ATTEMPTS = 30;
+const VERIFY_CONCURRENCY = 4;
+
+const taggedError = (code, message) => Object.assign(new Error(message), { code });
+
 const verifyRemoteAsset = async (asset) => {
   const url = remoteUrl(asset.name);
   const ranged = asset.ranged === true;
-  const response = await fetch(url, {
-    headers: {
-      ...(ranged ? { Range: 'bytes=0-15' } : {}),
-      Origin: 'https://criticalthinking.de5.net',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(30000),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        ...(ranged ? { Range: 'bytes=0-15' } : {}),
+        Origin: 'https://criticalthinking.de5.net',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (error) {
+    throw taggedError(NOT_READY, `${asset.name} 请求失败：${error.message}`);
+  }
 
   // 大文件走 LFS CDN 并支持 Range；小文件是普通对象，直接 200 全量返回。
   if (ranged) {
     if (response.status !== 206) {
-      throw new Error(`${asset.name} 远端期望 206，实际 ${response.status}`);
+      throw taggedError(NOT_READY, `${asset.name} 远端期望 206，实际 ${response.status}`);
     }
     const range = response.headers.get('content-range');
     const expected = `bytes 0-15/${asset.bytes}`;
     if (range !== expected) {
-      throw new Error(`${asset.name} Content-Range=${range ?? '(缺失)'}，期望 ${expected}`);
+      throw taggedError(
+        NOT_READY,
+        `${asset.name} Content-Range=${range ?? '(缺失)'}，期望 ${expected}`,
+      );
     }
     const body = await response.arrayBuffer();
     if (body.byteLength !== 16) {
-      throw new Error(`${asset.name} 分片长度 ${body.byteLength}，期望 16`);
+      throw taggedError(NOT_READY, `${asset.name} 分片长度 ${body.byteLength}，期望 16`);
     }
   } else {
     if (response.status !== 200) {
-      throw new Error(`${asset.name} 远端期望 200，实际 ${response.status}`);
+      throw taggedError(NOT_READY, `${asset.name} 远端期望 200，实际 ${response.status}`);
     }
     const body = await response.arrayBuffer();
     if (body.byteLength !== asset.bytes) {
-      throw new Error(`${asset.name} 远端 ${body.byteLength} 字节，清单要求 ${asset.bytes}`);
+      throw taggedError(
+        NOT_READY,
+        `${asset.name} 远端 ${body.byteLength} 字节，清单要求 ${asset.bytes}`,
+      );
     }
   }
 
   if (!response.headers.get('access-control-allow-origin')) {
     const host = new URL(response.url).host;
-    throw new Error(
+    throw taggedError(
+      CORS_MISSING,
       `${asset.name} 缺少 Access-Control-Allow-Origin（HTTP ${response.status}, ${host}）`,
     );
   }
 };
 
+/** 有上限并发地跑 worker，保持日志按资产维度的可读性。 */
+const runWithConcurrency = async (items, limit, worker) => {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+};
+
 const verifyRemote = async () => {
-  // push 后 ModelScope 的 LFS/CDN 有几秒到几分钟的传播窗口（大对象首次挂 CORS 更慢），
-  // 立即校验会看到 404 / 缺 CORS，这里给每个资产留约 2.5 分钟重试时间。
-  const attempts = 30;
-  const failures = [];
-  for (const asset of selectedAssets) {
+  // push 后 ModelScope 的 LFS/CDN 有几秒到几分钟的传播窗口；这里按资产并发校验，
+  // 并对「就绪但缺 CORS」单独做快速失败，避免串行空转几十分钟（Issue #82）。
+  const failures = await runWithConcurrency(selectedAssets, VERIFY_CONCURRENCY, async (asset) => {
     let lastError;
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let corsStreak = 0;
+    for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt += 1) {
       try {
         await verifyRemoteAsset(asset);
         lastError = undefined;
         break;
       } catch (error) {
         lastError = error;
-        if (attempt < attempts) {
+        if (error.code === CORS_MISSING) {
+          corsStreak += 1;
+          if (corsStreak >= FAILFAST_CORS_ATTEMPTS) {
+            console.warn(
+              `modelscope: ${asset.name} 连续 ${corsStreak} 次就绪但缺 CORS，判定为响应头配置问题，快速失败`,
+            );
+            break;
+          }
+        } else {
+          corsStreak = 0;
+        }
+        if (attempt < VERIFY_ATTEMPTS) {
           console.log(
-            `modelscope: ${asset.name} 尚未就绪（${attempt}/${attempts}）：${error.message}，5 秒后重试`,
+            `modelscope: ${asset.name} 尚未就绪（${attempt}/${VERIFY_ATTEMPTS}）：${error.message}，5 秒后重试`,
           );
           await new Promise((resolve) => setTimeout(resolve, 5000));
         }
       }
     }
     if (lastError) {
-      failures.push(lastError);
       console.warn(`modelscope: ${asset.name} 校验未通过：${lastError.message}`);
-    } else {
-      console.log(`modelscope: ${asset.name} 远端 ${asset.ranged ? '206' : '200'} / CORS 正常`);
+      return lastError;
     }
-  }
-  if (failures.length > 0) {
-    throw new AggregateError(failures, `${failures.length} 个资产远端校验未通过`);
+    console.log(`modelscope: ${asset.name} 远端 ${asset.ranged ? '206' : '200'} / CORS 正常`);
+    return undefined;
+  });
+
+  const failed = failures.filter((error) => error !== undefined);
+  if (failed.length > 0) {
+    throw new AggregateError(failed, `${failed.length} 个资产远端校验未通过`);
   }
 };
 

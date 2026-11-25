@@ -526,8 +526,13 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           MODELSCOPE_TOKEN: ${{ secrets.MODELSCOPE_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -eu
+          # Release 只是回退源：先给出可操作的提示，不要等到上传完几百 MB 才 403（Issue #82）。
+          if [ -z "${RELEASE_TOKEN:-}" ]; then
+            echo "::warning::未配置 RELEASE_TOKEN，GitHub Release 回退源会以 403 失败；请在仓库 Secrets 添加一个具备 Contents: Read and write 的 PAT"
+          fi
           if [ "$PUBLISH_TARGET" = "r2" ] || [ "$PUBLISH_TARGET" = "both" ]; then
             for name in R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
               value="${!name}"
