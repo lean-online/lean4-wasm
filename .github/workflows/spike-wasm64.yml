@@ -1131,18 +1131,39 @@ jobs:
       # 传递依赖闭环门禁：只挂载 Init + extension.requires + 目标扩展本身，禁止混入未打包目录，
       # 防止再出现“漏打 Batteries/Qq 但在未过滤目录上绿灯上线”的回归（Issue #77）。
       - name: 校验解包扩展闭环（Init + requires + 扩展实弹 LSP）
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           LEAN_WASM_DIAG_DEBUG: '1'
           LEAN_STACK_SIZE_KB: '16384'
           LEAN_MAIN_USE_THREAD: '0'
         run: |
           set -euo pipefail
+
+          # 先证明「文件真的在解包产物里」，再谈 LSP。两者分开，失败原因才不会混在一起：
+          #   - 缺失 .olean      → 打包 roots 漏了模块
+          #   - 缺失 .olean.private → 私有声明没打进去，import 时 initFn 会报 unknown declaration
+          verify_module() {
+            local lib="$1" module="$2" rel
+            rel="$(printf '%s' "$module" | tr '.' '/')"
+            if [ ! -f "$lib/$rel.olean" ]; then
+              echo "::error::解包产物缺少 $rel.olean（打包 roots 漏了 $module）"
+              return 1
+            fi
+            if [ ! -f "$lib/$rel.olean.private" ]; then
+              echo "::error::解包产物缺少 $rel.olean.private（私有声明会丢，initFn 会报 unknown declaration）"
+              return 1
+            fi
+            echo "ok: $rel.olean (+ .olean.private)"
+          }
+
           rm -rf work/verify-ext-std work/verify-ext-mathlib
           node scripts/ci/unpack-packed-lib.ts \
             --indexes work/wasm64-runtime/lean-init-64.index.json,work/wasm64-runtime/lean-std-64.index.json \
             --chunks-dir work/wasm64-runtime \
             --out work/verify-ext-std
+          echo '--- verify-ext-std 顶层 ---'
+          find work/verify-ext-std -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+          verify_module work/verify-ext-std Std.Data.HashMap
           node scripts/wasm64-lsp-diagnostics.ts \
             --lean work/release-lsp/lean-lsp-adapted.mjs \
             --lib work/verify-ext-std \
@@ -1155,11 +1176,23 @@ jobs:
               --indexes work/wasm64-runtime/lean-init-64.index.json,work/wasm64-runtime/lean-std-64.index.json,work/wasm64-runtime/lean-mathlib-64.index.json \
               --chunks-dir work/wasm64-runtime \
               --out work/verify-ext-mathlib
+            echo '--- verify-ext-mathlib 顶层 ---'
+            find work/verify-ext-mathlib -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
+            verify_module work/verify-ext-mathlib Mathlib.Tactic.Basic
+            verify_module work/verify-ext-mathlib ImportGraph.Shake.DeclNeeds
+            # Good 先跑：只断言「导入后没有任何诊断」，把 import 失败与真正的类型错误分开报。
             node scripts/wasm64-lsp-diagnostics.ts \
               --lean work/release-lsp/lean-lsp-adapted.mjs \
               --lib work/verify-ext-mathlib \
               --module Mathlib.Tactic.Basic \
+              --doc Good.lean \
               --good-code $'import Mathlib.Order.Basic\nexample {α : Type} [Preorder α] {a b c : α} (h₁ : a ≤ b) (h₂ : b ≤ c) : a ≤ c := le_trans h₁ h₂' \
+              --mode worker --timeout 600000 --idle-timeout 180000 --jobs 4
+            node scripts/wasm64-lsp-diagnostics.ts \
+              --lean work/release-lsp/lean-lsp-adapted.mjs \
+              --lib work/verify-ext-mathlib \
+              --module Mathlib.Tactic.Basic \
+              --doc Bad.lean \
               --mode worker --timeout 600000 --idle-timeout 180000 --jobs 4
           fi
           rm -rf work/verify-ext-std work/verify-ext-mathlib
