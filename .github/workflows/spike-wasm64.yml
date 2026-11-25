@@ -1173,6 +1173,18 @@ jobs:
           # 先证明「文件真的在解包产物里」，再谈 LSP。两者分开，失败原因才不会混在一起：
           #   - 缺失 .olean      → 打包 roots 漏了模块
           #   - 缺失 .olean.private → 私有声明没打进去，import 时 initFn 会报 unknown declaration
+          # 解释器执行 initFn 需要 .ir；缺了会看到
+          # `(interpreter) unknown declaration ...initFn...`，而完整目录（未打包）却是绿的（Issue #82）。
+          verify_ir() {
+            local lib="$1" module="$2" rel
+            rel="$(printf '%s' "$module" | tr '.' '/')"
+            if [ ! -f "$lib/$rel.ir" ]; then
+              echo "::error::解包产物缺少 $rel.ir（解释器执行 initFn 会报 unknown declaration）"
+              return 1
+            fi
+            echo "ok: $rel.ir"
+          }
+
           verify_module() {
             local lib="$1" module="$2" rel
             rel="$(printf '%s' "$module" | tr '.' '/')"
@@ -1195,6 +1207,7 @@ jobs:
           echo '--- verify-ext-std 顶层 ---'
           find work/verify-ext-std -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
           verify_module work/verify-ext-std Std.Data.HashMap
+          verify_ir work/verify-ext-std Std.Data.HashMap
           node scripts/wasm64-lsp-diagnostics.ts \
             --lean work/release-lsp/lean-lsp-adapted.mjs \
             --lib work/verify-ext-std \
@@ -1211,6 +1224,8 @@ jobs:
             find work/verify-ext-mathlib -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort
             verify_module work/verify-ext-mathlib Mathlib.Tactic.Basic
             verify_module work/verify-ext-mathlib ImportGraph.Shake.DeclNeeds
+            verify_ir work/verify-ext-mathlib Mathlib.Tactic.Basic
+            verify_ir work/verify-ext-mathlib ImportGraph.Shake.DeclNeeds
             # Good 先跑：只断言「导入后没有任何诊断」，把 import 失败与真正的类型错误分开报。
             node scripts/wasm64-lsp-diagnostics.ts \
               --lean work/release-lsp/lean-lsp-adapted.mjs \
