@@ -235,13 +235,14 @@ export const slice = (
   // 模块被重编、其余命中旧缓存，两类 olean 混在一起会让 initFn 在 import 时抛 unknown declaration
   // （实测：ImportGraph.Shake 用缓存、ImportGraph.Shake.DeclNeeds 重编）。所以把闭包扩到整包，
   // 让编译步骤能以包为单位决定「全用缓存」还是「整包重编」。
-  const touchedPackages = new Set(closure.order.map((module) => module.split('.')[0]));
+  const packageOf = (module: string): string => module.split('.')[0] ?? '';
+  const touchedPackages = new Set(closure.order.map(packageOf));
   // Mathlib 本身就有几千个模块，按包扩张会直接把 --max 顶爆；只给「小包」（第三方依赖）做扩张，
   // 它们才是历史上出现批次混编的地方。Mathlib 内部由缓存键绑定 src 来保证同源。
   const PACKAGE_EXPAND_LIMIT = 500;
   const packageSizes = new Map<string, number>();
   for (const module of index.keys()) {
-    const pkg = module.split('.')[0];
+    const pkg = packageOf(module);
     packageSizes.set(pkg, (packageSizes.get(pkg) ?? 0) + 1);
   }
   const expandable = new Set(
@@ -250,7 +251,7 @@ export const slice = (
   const skipped = [...touchedPackages].filter((pkg) => !expandable.has(pkg));
   if (skipped.length)
     log(`package boundary: 跳过超大包（>${PACKAGE_EXPAND_LIMIT}）：${skipped.sort().join(',')}`);
-  const packageWide = [...index.keys()].filter((module) => expandable.has(module.split('.')[0]));
+  const packageWide = [...index.keys()].filter((module) => expandable.has(packageOf(module)));
   if (packageWide.length > closure.order.length) {
     const expanded = collectClosures(index, packageWide, readSource);
     if (expanded.order.length > max) {
