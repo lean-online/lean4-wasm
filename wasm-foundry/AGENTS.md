@@ -8,10 +8,10 @@
 
 | 路径 | 职责 | 关键规范 |
 | --- | --- | --- |
-| 仓根 `src/`（相对本目录 `../src/`） | Emscripten 静态构建、`MEMORY64`、`-DLEAN_GITHASH_OVERRIDE`、`replace_fn` / `whnfCoreStep` / `simpLoopStep` | 保持最少干净原生 Commit，禁止改动上游根文档，确保后续可干净 `git rebase` |
+| 仓根 `src/`（相对本目录 `../src/`） | Emscripten 静态构建、`MEMORY64`（`-DLEAN_WASM64=ON` 才启用）、`-DLEAN_GITHASH_OVERRIDE`、`replace_fn` / `whnfCoreStep` / `simpLoopStep` | 保持最少干净原生 Commit，禁止改动上游根文档，确保后续可干净 `git rebase`；wasm32 与 wasm64 必须共用这一棵树 |
 | `scripts/*.ts` / `scripts/ci/` / `scripts/lib/` | wasm64 构建、LSP 胶水适配、差分等价门禁、Mathlib 裁切与打包 | Node 24 原生类型擦除（`erasableSyntaxOnly`）；CLI 解析用 `scripts/lib/cli.ts`，路径校验用 `scripts/lib/fs-guards.ts` |
 | `scripts/*.mjs` | wasm32 打包（zstd level 19）、扩展打包、R2 / 魔搭上传与清单校验 | 源解析用 `scripts/lib/manifest-sources.mjs`；S3 参数解析用 `scripts/lib/upload-config.mjs` |
-| `scripts/patches/` | wasm32 4.35.0 增量 emscripten 补丁 | 仅服务 `runtime-wasm32-435.yml`；wasm64 补丁已转正进仓根 `src/` |
+| `scripts/patches/` | 4.35.0 时代的增量 emscripten 补丁（历史） | 仅供重建 `runtime-v4.35.0` 历史资产；wasm32 / wasm64 现已直接编译仓根软 Fork 源码（ADR-06），补丁不再参与日常构建 |
 | `scripts/depth-probe/` | Emscripten 递归深度与 WHNF 尾调用探针 | 手写 C/C++ 受 `.clang-format` / `.clang-tidy` / `scripts/check-cpp.sh` 约束 |
 | `config/` | `lean4-runtime.json` 与 `lean4-wasm64-runtime.json` | 产物发版后同步更新主应用仓 `lean-online/lean-init-ide` 的对应清单（wasm32 同步需在主仓重跑 `pnpm run patch:lsp`） |
 

@@ -165,11 +165,23 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
   # - system libraries such as OpenGL are included in the JS but shouldn't be
   # - we need EMSCRIPTEN_KEEPALIVE annotations on exports to run meta-dce (-s MAIN_MODULE=2)
 
+  # Memory64 is opt-in so the same source tree can emit the wasm32 production runtime and the
+  # experimental wasm64 runtime (ADR-06). wasm32 keeps the 32-bit ABI and must not see
+  # -sMEMORY64=1, because clang would emit i64 pointers that the deployed glue cannot load.
+  option(LEAN_WASM64 "Target the Emscripten Memory64 (wasm64) ABI" OFF)
+
   # From https://emscripten.org/docs/compiling/WebAssembly.html#backends:
   # > The simple and safe thing is to pass all -s flags at both compile and link time.
-  set(EMSCRIPTEN_SETTINGS "-sMEMORY64=1 -s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
+  if(LEAN_WASM64)
+    set(EMSCRIPTEN_SETTINGS "-sMEMORY64=1 -s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
+  else()
+    set(EMSCRIPTEN_SETTINGS "-s ALLOW_MEMORY_GROWTH=1 -fwasm-exceptions -pthread")
+  endif()
   string(APPEND LEANC_EXTRA_CC_FLAGS " -pthread")
   string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_EMSCRIPTEN ${EMSCRIPTEN_SETTINGS}")
+  if(LEAN_WASM64)
+    string(APPEND LEAN_EXTRA_CXX_FLAGS " -D LEAN_WASM64")
+  endif()
   string(APPEND LEAN_EXTRA_LINKER_FLAGS " ${EMSCRIPTEN_SETTINGS}")
 endif()
 

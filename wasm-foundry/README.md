@@ -7,7 +7,7 @@
 
 ## 目录与职责
 
-- **wasm32 4.35.0 生产构建与扩展发布**：`../.github/workflows/runtime-wasm32-435.yml`、`scripts/package-runtime-assets.mjs`、`scripts/package-runtime-extension.mjs`、`scripts/upload-assets.mjs`、`scripts/upload-modelscope.mjs`、`scripts/assets/runner-worker.js`
+- **wasm32 4.36.0 生产构建与扩展发布**（ADR-06：直接编译仓根软 Fork，`-DLEAN_WASM64` 默认 OFF）：`../.github/workflows/runtime-wasm32.yml`、`scripts/patch-wasm32.sh`、`scripts/package-runtime-assets.mjs`、`scripts/package-runtime-extension.mjs`、`scripts/upload-assets.mjs`、`scripts/upload-modelscope.mjs`、`scripts/assets/runner-worker.js`
 - **wasm64 构建链与 5 层一致性门禁**：`../.github/workflows/spike-wasm64.yml`、`../.github/workflows/native-consistency-gate.yml`、`scripts/pin-lean.ts`（默认 `4.36.0`）、`scripts/wasm64-patch-equivalence.ts`、`scripts/ci/check-abi-diff.ts`、`scripts/ci/verify-dual-checkers.ts`、[docs/DIVERGENCES.md](docs/DIVERGENCES.md)、`scripts/package-wasm64-*.ts`、`npm/`
 - **C/C++ 门禁与递归深度探针**：`../.github/workflows/cpp-gate.yml`、`scripts/check-cpp.sh`、`../.github/workflows/depth-probe.yml`、`scripts/depth-probe/`
 - **主应用仓（`lean-online/lean-init-ide`）**：仅负责前端应用与边缘网关，两仓通过 `config/lean4-runtime.json` 与 `config/lean4-wasm64-runtime.json` 契约交接。

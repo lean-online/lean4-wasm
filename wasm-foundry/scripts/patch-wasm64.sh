@@ -21,7 +21,7 @@ ROOT="${1:?usage: patch-wasm64.sh <foundryRoot>}"
 SCRIPT="$ROOT/wasm-llvm/producer/lean-browser/scripts/build.sh"
 GMP="$ROOT/work/gmp-install"
 
-if grep -q 'GMP_INSTALL_PREFIX' "$SCRIPT" && grep -q 'WASM_LLVM_LEAN_SRC_DIR' "$SCRIPT"; then
+if grep -q 'GMP_INSTALL_PREFIX' "$SCRIPT" && grep -q 'WASM_LLVM_LEAN_SRC_DIR' "$SCRIPT" && grep -q 'LEAN_WASM64=ON' "$SCRIPT"; then
   echo "build.sh 已打过补丁，跳过"
   exit 0
 fi
@@ -67,10 +67,12 @@ text = replace_once(
 
 # tail call：clang 对 wasm 默认不做兄弟调用优化，只有在编译步与链接步都带上 -mtail-call 才会生成 return_call。
 # 优化等级与 wasm32 主线一致使用 -O3。
+# Memory64 已改成 CMake option（ADR-06：同一棵源码树同时产出 wasm32 / wasm64），
+# 所以这里必须显式打开，否则 objects 会按 wasm32 ABI 编译，和 -sMEMORY64=1 的链接阶段对不上。
 text = replace_once(
     text,
     "-DCMAKE_BUILD_TYPE=Release",
-    "-DCMAKE_BUILD_TYPE=Release -DLEAN_GITHASH_OVERRIDE=\"$LEAN_COMMIT\" "
+    "-DCMAKE_BUILD_TYPE=Release -DLEAN_WASM64=ON -DLEAN_GITHASH_OVERRIDE=\"$LEAN_COMMIT\" "
     "'-DCMAKE_C_FLAGS=-sMEMORY64=1 -mtail-call' "
     "'-DCMAKE_CXX_FLAGS=-sMEMORY64=1 -mtail-call' "
     "'-DCMAKE_EXE_LINKER_FLAGS=-sMEMORY64=1 -mtail-call'",
@@ -90,10 +92,10 @@ text = text.replace('"$BUILD/lib/lean/libleanrt.a"', f'"$BUILD/lib/lean/libleanr
 path.write_text(text)
 PY
 
-for marker in '-O3' 'WASM_LLVM_LEAN_SRC_DIR' 'LEAN_GITHASH_OVERRIDE' 'MEMORY64' 'GMP_INSTALL_PREFIX'; do
+for marker in '-O3' 'WASM_LLVM_LEAN_SRC_DIR' 'LEAN_WASM64=ON' 'LEAN_GITHASH_OVERRIDE' 'MEMORY64' 'GMP_INSTALL_PREFIX'; do
   grep -q -- "$marker" "$SCRIPT" || {
     echo "build.sh 缺少必需注入标记: $marker" >&2
     exit 1
   }
 done
-grep -n -- 'MEMORY64\|GMP\|-O3\|WASM_LLVM_LEAN_SRC_DIR\|LEAN_GITHASH_OVERRIDE' "$SCRIPT"
+grep -n -- 'MEMORY64\|GMP\|-O3\|LEAN_WASM64\|WASM_LLVM_LEAN_SRC_DIR\|LEAN_GITHASH_OVERRIDE' "$SCRIPT"

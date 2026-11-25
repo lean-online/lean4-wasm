@@ -23,7 +23,11 @@ Author: Leonardo de Moura
 
 #ifndef LEAN_DEFAULT_THREAD_STACK_SIZE
 #ifdef LEAN_EMSCRIPTEN
+#ifdef LEAN_WASM64
 #define LEAN_DEFAULT_THREAD_STACK_SIZE 64*1024*1024 // 64MB for wasm64
+#else
+#define LEAN_DEFAULT_THREAD_STACK_SIZE 8*1024*1024 // 8MB for wasm32: 64MB x N threads blows the 1GiB budget
+#endif
 #else
 #define LEAN_DEFAULT_THREAD_STACK_SIZE 1024*1024*1024 // 1GB for 64-bit
 #endif

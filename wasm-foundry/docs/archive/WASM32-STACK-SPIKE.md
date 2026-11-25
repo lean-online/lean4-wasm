@@ -1,9 +1,9 @@
-> **历史归档声明**：本文档记录早期基于 Lean 4.34.1 的 `wasm32` 递归深度与 `-O3` 编译实验日志（归档自 `docs/WASM32-STACK-SPIKE.md`）。生产已迁移至 Lean 4.35.0（见 `.github/workflows/runtime-wasm32-435.yml`）；下文仅保留历史实测数据，请勿作为当前实现与开发规范的直接依据。
+> **历史归档声明**：本文档记录早期基于 Lean 4.34.1 的 `wasm32` 递归深度与 `-O3` 编译实验日志（归档自 `docs/WASM32-STACK-SPIKE.md`）。生产已迁移至 Lean 4.36.0 软 Fork 源码树（ADR-06，见 `.github/workflows/runtime-wasm32.yml`）；下文仅保留历史实测数据，请勿作为当前实现与开发规范的直接依据。
 
 # wasm32 递归深度与编译性能 spike 结论（历史归档）
 
 分支：`perf/wasm32-runtime`（历史实验分支，未合入 main）
-工作流：4.35 生产工作流 `.github/workflows/runtime-wasm32-435.yml`（4.34 历史工作流已删除）
+工作流：4.36 生产工作流 `.github/workflows/runtime-wasm32.yml`（4.34 / 4.35 历史工作流已删除）
 日期：2026-11-16
 
 ## 目标
