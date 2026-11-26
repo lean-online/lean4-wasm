@@ -1,7 +1,7 @@
 // 打包实验性 wasm64 运行时交付目录（lean-lsp-adapted.mjs + lean-lsp.wasm.zst +
 // 分片 zstd 64 位 Init 资产 + wasm64-runtime-manifest.json + SHA256SUMS），
 // 供 Cloudflare R2（经主站 Pages Function /cdn/ 同源网关，浏览器唯一数据源）发布；
-// GitHub Release 只做归档与构建期回退：Release 下载没有 CORS 头，浏览器不会使用它。
+// GitHub Release 仅作可选归档与构建期参考（无 CORS 头，浏览器端无 Release 回退源）。
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

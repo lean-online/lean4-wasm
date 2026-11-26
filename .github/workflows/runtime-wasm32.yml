@@ -559,9 +559,9 @@ jobs:
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -eu
-          # Release 只是回退源：先给出可操作的提示，不要等到上传完几百 MB 才 403（Issue #82）。
+          # 可选归档发布（仅作归档/构建期参考，浏览器端无 Release 回退源）：不配 RELEASE_TOKEN 不影响线上主源 R2（/cdn/）与魔搭镜像。
           if [ -z "${RELEASE_TOKEN:-}" ]; then
-            echo "::warning::未配置 RELEASE_TOKEN，GitHub Release 回退源会以 403 失败；请在仓库 Secrets 添加一个具备 Contents: Read and write 的 PAT"
+            echo "::warning::未配置 RELEASE_TOKEN，可选归档 GitHub Release 可能返回 403（浏览器端无 Release 回退源，不影响线上主源 R2 /cdn/ 与魔搭镜像）；如需自动归档可添加具备 Contents: Read and write 的 PAT"
           fi
           if [ "$PUBLISH_TARGET" = "r2" ] || [ "$PUBLISH_TARGET" = "both" ]; then
             for name in R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
@@ -705,8 +705,8 @@ jobs:
             pnpm run upload:modelscope -- --extensions work/extensions/upload --metadata
           fi
 
-      # 放在 R2 / 魔搭之后：Release 只是回退源，token 缺 contents:write 时不该拖累主链路。
-      - name: 发布 GitHub Release（回退源）
+      # 放在 R2 / 魔搭之后：可选归档发布（仅作归档/构建期参考，浏览器端无 Release 回退源）；token 缺 contents:write 不影响 R2 /cdn/ 与魔搭主链路。
+      - name: 可选归档发布 GitHub Release（仅作归档与构建期参考）
         timeout-minutes: 15
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}

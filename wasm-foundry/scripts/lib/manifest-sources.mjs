@@ -28,7 +28,7 @@ const composeUrl = (baseUrl, assetPath) => {
 };
 
 /**
- * 组装单资产的候选下载/探测 URL 列表（同源主源 → 可选魔搭镜像 → 非 zstd 的 Release 回退）。
+ * 组装单资产的候选下载/探测 URL 列表（同源主源 → 可选魔搭镜像 → 仅 Node 构建期非 zstd 的可选归档参考，浏览器端无 Release 回退源）。
  */
 export const assetSources = (manifest, asset, primaryBaseUrl, options = {}) => {
   const sources = [];

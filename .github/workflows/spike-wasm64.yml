@@ -1318,7 +1318,7 @@ jobs:
           if-no-files-found: warn
 
   # 将 deep 产出的实验性 wasm64 运行时（Init 64位 + release-lsp）发布到
-  # Cloudflare R2（经主站 Pages Function /cdn/ 同源网关，浏览器唯一数据源）与 GitHub Release（仅归档），
+  # Cloudflare R2（经主站 Pages Function /cdn/ 同源网关，浏览器唯一主源）与魔搭镜像，外加可选归档 GitHub Release（仅作归档/构建期参考，浏览器端无 Release 回退源），
   # 供主站按手动开关实验试用（默认仍是 wasm32）。
   publish-wasm64:
     needs: [lint, deep]
@@ -1543,7 +1543,8 @@ jobs:
             console.log(`modelscope: uploaded ${prefix} (${manifest.assets.length} assets)`);
           '
 
-      - name: 发布 GitHub Release（runtime-v<lean>-wasm64，归档与构建期使用）
+      # 可选归档发布（仅作归档/构建期参考，浏览器端无 Release 回退源）：未配 RELEASE_TOKEN 不影响线上 R2（/cdn/）与魔搭镜像。
+      - name: 可选归档发布 GitHub Release（runtime-v<lean>-wasm64，仅作归档与构建期参考）
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}

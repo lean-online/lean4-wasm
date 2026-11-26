@@ -528,11 +528,13 @@ const main = async () => {
   try {
     await verifyRemote();
   } catch (error) {
-    // 上传已经成功，镜像校验失败不该阻塞 R2 / GitHub Release 的发布；
+    // 上传已经成功，镜像校验失败不该阻塞 R2 主源与可选归档 GitHub Release 的发布；
     // --verify-only 仍然保持严格模式，用来单独检查镜像健康度。
     if (verifyOnly) throw error;
     console.warn(`modelscope: 远端校验未通过，但资产已 push：${error.message}`);
-    console.warn('modelscope: 可用 --verify-only 单独复查；不影响 R2 / GitHub Release');
+    console.warn(
+      'modelscope: 可用 --verify-only 单独复查；不影响 R2 主源与可选归档 GitHub Release',
+    );
   }
   console.log(
     'modelscope: 完成；把 config/lean4-runtime.json 的 mirror.baseUrl 指向上面的目录即可',
