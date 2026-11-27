@@ -55,12 +55,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'smoke 只验 Init；deep 追加 Mathlib 与 release；publish 从指定 deep run 发布'
+        description: 'smoke 只验 Init；deep 追加 Mathlib 与 release；publish 从指定 deep run 发布；cross-diff 基于缓存产物快速跑双端差分'
         type: choice
-        options: [smoke, deep, publish]
+        options: [smoke, deep, publish, cross-diff]
         default: smoke
       source_run_id:
-        description: 'mode=publish 时复用的 workflow run ID（需包含 wasm64-runtime-release 产物）'
+        description: 'mode=publish 或 cross-diff 时复用的 workflow run ID（需包含 wasm64-runtime-release 产物）'
         type: string
         default: ''
 
@@ -84,8 +84,12 @@ jobs:
       run_build: ${{ steps.dedup.outputs.run_build }}
       tier: ${{ steps.audit.outputs.tier }}
       lean_core_changed: ${{ steps.audit.outputs.lean_core_changed }}
+      change_tier: ${{ steps.audit.outputs.change_tier }}
+      change_lean_core_changed: ${{ steps.audit.outputs.change_lean_core_changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       - name: PR 合并去重（避免与刚通过的 PR smoke 重复运行）
         id: dedup
@@ -126,9 +130,21 @@ jobs:
             echo "::error::拿不到上游 tag ${TAG}"
             exit 1
           }
-          node wasm-foundry/scripts/ci/audit-upstream-diff.ts \
-            --tag "$TAG" --repo . \
-            --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT" 
+          BASE_REF=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE_REF="${{ github.event.before }}"
+          fi
+          if [ -n "$BASE_REF" ] && git rev-parse --verify -q "${BASE_REF}^{commit}" > /dev/null; then
+            node wasm-foundry/scripts/ci/audit-upstream-diff.ts \
+              --tag "$TAG" --base "$BASE_REF" --repo . \
+              --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT"
+          else
+            node wasm-foundry/scripts/ci/audit-upstream-diff.ts \
+              --tag "$TAG" --repo . \
+              --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT"
+          fi
 
       - name: 安装依赖
         working-directory: wasm-foundry
@@ -160,7 +176,7 @@ jobs:
 
   prepare:
     needs: lint
-    if: github.event.inputs.mode != 'publish' && needs.lint.outputs.run_build == 'true'
+    if: github.event.inputs.mode != 'publish' && github.event.inputs.mode != 'cross-diff' && needs.lint.outputs.run_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     defaults:
@@ -311,7 +327,7 @@ jobs:
   # 每次 push 的快速回路：只证明工具链、Init 编译和 Init LSP 没坏。
   smoke:
     needs: prepare
-    if: github.event.inputs.mode != 'publish'
+    if: github.event.inputs.mode != 'publish' && github.event.inputs.mode != 'cross-diff'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     defaults:
@@ -523,6 +539,21 @@ jobs:
           cd work/browser
           pnpm exec tsx wasm64-browser-verify.ts ../../work/dist ../../work/olean32 --modes version,compile,lsp
 
+      # Issue #83 第二项：用同一批 22 组样本分别运行官方原生 lean 与真实 Chrome wasm64，强制校验退出码、错误类别与关键输出一致。
+      - name: 官方原生 Lean vs Chrome Wasm64 跨端差分一致性门禁（Init 22 组）
+        timeout-minutes: 20
+        run: |
+          BOOT="$(node scripts/ci/boot-dir.ts)"
+          [ -e node_modules ] || ln -s "$PWD/work/browser/node_modules" node_modules
+          node scripts/ci/cross-platform-diff.ts \
+            --boot-lean "$BOOT/bin/lean" \
+            --boot-lib work/olean32 \
+            --dist-dir work/dist \
+            --suite init \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --report work/cross-diff-init.json \
+            --timeout 180000
+
       # 测 Chrome 1 MB Worker 栈下 whnfCoreStep 的实际递归上界（N=1000..4000）。
       - name: 递归深度实测：Chrome Worker（maxRecDepth=8000）
         continue-on-error: true
@@ -634,13 +665,14 @@ jobs:
           if-no-files-found: warn
 
   # 深水区：Mathlib 裁切、官方 olean、数学库 LSP、release/npm。
-  # 只在 nightly、手动 dispatch(mode=deep) 或提交信息带 [wasm64-deep] 时跑。
+  # 在 nightly、手动 dispatch(mode=deep)、提交信息带 [wasm64-deep] 或本次增量触及 src/Init|Std|Lean 时自动升级触发。
   deep:
-    needs: [prepare, smoke]
+    needs: [lint, prepare, smoke]
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deep') ||
-      (github.event_name == 'push' && contains(github.event.head_commit.message, '[wasm64-deep]'))
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[wasm64-deep]')) ||
+      needs.lint.outputs.change_lean_core_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
     defaults:
@@ -918,6 +950,19 @@ jobs:
                 --module Mathlib.Tactic.Ring \
                 --good "example (a b : Nat) : (a + b) * (a + b) = a * a + 2 * a * b + b * b := by ring"
             )
+          fi
+          if [ -f work/mathlib-official-lib/Mathlib/Tactic/Ring.olean ]; then
+            echo "=== 官方原生 Lean vs Chrome Wasm64 跨端差分一致性（全量 25 组含 Mathlib） ==="
+            [ -e node_modules ] || ln -s "$PWD/work/browser/node_modules" node_modules
+            node scripts/ci/cross-platform-diff.ts \
+              --boot-lean "$BOOT/bin/lean" \
+              --boot-lib work/mathlib-official-lib \
+              --dist-dir work/dist \
+              --manifest /mathlib-official-manifest.json \
+              --suite all \
+              --summary "$GITHUB_STEP_SUMMARY" \
+              --report work/cross-diff-all.json \
+              --timeout 300000
           fi
           if [ -f work/mathlib-official-lib/Mathlib/Data/Nat/Prime/Basic.olean ]; then
             echo "=== 测试官方 Mathlib.Data.Nat.Prime.Basic (Node LSP) ==="
@@ -1575,3 +1620,80 @@ jobs:
           done
           [ "${#FILES[@]}" -gt 0 ] || { echo "未找到可上传的 Release 文件"; exit 1; }
           gh release upload "$TAG" -R "$REPO" "${FILES[@]}" --clobber
+
+  # 基于已构建的 wasm64-runtime-release 产物单独快速运行原生 vs Chrome 跨端差分（约 3-5 分钟，免去 30-50 分钟重编）。
+  cross-diff:
+    needs: lint
+    if: >-
+      !cancelled() &&
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.mode == 'cross-diff' &&
+      github.event.inputs.source_run_id != ''
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: wasm-foundry
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: 安装依赖
+        run: sudo apt-get update && sudo apt-get install -y zstd curl
+
+      - name: 缓存官方 Lean 引导包
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: wasm-foundry/work/lean-*-linux
+          key: wasm64-boot-v1-${{ hashFiles('wasm-foundry/scripts/pin-lean.ts') }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: wasm64-runtime-release
+          path: wasm-foundry/work/packed-runtime
+          run-id: ${{ github.event.inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 准备浏览器驱动与测试 Harness
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.18.0 --activate
+          pnpm install --frozen-lockfile --prefer-offline
+          mkdir -p work/harness-tools work/harness
+          (
+            cd work/harness-tools
+            pnpm init > /dev/null
+            pnpm pkg set type=module
+            pnpm add esbuild --allow-build=esbuild
+            pnpm exec esbuild ../../scripts/wasm64-browser-harness.ts --bundle --format=esm --outfile=../harness/harness.mjs
+            pnpm exec esbuild ../../scripts/wasm64-lsp-browser-worker.ts --bundle --format=esm --outfile=../harness/lsp-worker.mjs
+          )
+
+      - name: 运行独立跨端差分套件（复用缓存构建产物）
+        run: |
+          BOOT="$(bash scripts/ci/ensure-boot.sh "$GITHUB_WORKSPACE/wasm-foundry")"
+          SUITE=init
+          if [ -f work/packed-runtime/lean-mathlib-64.index.json ]; then SUITE=all; fi
+          node scripts/ci/cross-platform-diff.ts \
+            --boot-lean "$BOOT/bin/lean" \
+            --boot-lib "$BOOT/lib/lean" \
+            --packed-runtime work/packed-runtime \
+            --harness-dir work/harness \
+            --suite "$SUITE" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --report work/cross-diff-cached.json \
+            --timeout 300000
+
+      - name: 上传跨端差分详细报告
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wasm64-cross-diff
+          path: wasm-foundry/work/cross-diff-*.json
+          if-no-files-found: warn

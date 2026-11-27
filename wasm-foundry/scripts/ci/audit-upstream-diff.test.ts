@@ -90,4 +90,19 @@ describe('renderReport', () => {
     expect(report).toContain('完全一致');
     expect(report).toContain('**分级：light**');
   });
+
+  it('提供增量审计 changeAudit 时追加增量分级与深门禁提示', () => {
+    const cumulative = summarizeDiff([{ path: 'src/Lean/Meta/WHNF.lean', added: 7, deleted: 3 }]);
+    const lightDelta = summarizeDiff([]);
+    const lightReport = renderReport(cumulative, 'v4.36.0', lightDelta, 'abc1234');
+    expect(lightReport).toContain('本次变更增量分级（相对 abc1234）');
+    expect(lightReport).toContain('增量分级：**light**');
+
+    const coreDelta = summarizeDiff([
+      { path: 'src/Init/Data/Nat/Basic.lean', added: 2, deleted: 0 },
+    ]);
+    const coreReport = renderReport(cumulative, 'v4.36.0', coreDelta, 'def5678');
+    expect(coreReport).toContain('增量分级：**lean-core**');
+    expect(coreReport).toContain('自动升级触发 `deep`');
+  });
 });
