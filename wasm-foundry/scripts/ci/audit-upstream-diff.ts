@@ -1,11 +1,11 @@
-// 软 Fork 分级 Diff 审计（Issue #83）：对比上游官方 tag，输出 src/ 的改动清单与「需要哪一档门禁」。
+// 软 Fork 分级 Diff 审计（Issue #83）：对比上游官方 tag 与可选基线提交（--base），输出 src/ 的改动清单与分级门禁信号。
 //
 // 动机：改动 src/Init、src/Std、src/Lean 或编译器 Pass 即使语义等价，也会让私有 / 特化声明
 // 的哈希（`_private..._hygCtx._hyg.*.spec_0`）与官方预编译 Mathlib .olean 不兼容；但一律禁止
 // 修改 src/ 又会挡住必要的深度适配。这里把改动分层，用「分级」代替「白名单」。
 //
 // 用法:
-//   node scripts/ci/audit-upstream-diff.ts --tag v4.36.0 [--repo <root>] \
+//   node scripts/ci/audit-upstream-diff.ts --tag v4.36.0 [--base <sha>] [--repo <root>] \
 //     [--summary <file>] [--output <file>] [--json]
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
@@ -118,10 +118,23 @@ const TIER_ADVICE: Record<DiffTier, string> = {
     '触及 C++ 运行时 / Emscripten 适配层：必须跑 C ABI Diff 与原生 vs wasm64 跨端差分（Consistency · 5-Layer Gate）。',
   'lean-core':
     '触及 Lean 核心库（src/Init、src/Std、src/Lean）或编译器 Pass：私有声明哈希可能与官方预编译 Mathlib .olean 漂移。' +
-    '合并前必须手动 dispatch `Runtime · Lean wasm64 gate` 的 `mode=deep`（它跑官方 Mathlib 实弹门禁）。',
+    '合并前必须跑 `Runtime · Lean wasm64 gate` 的 `mode=deep` 官方 Mathlib 实弹门禁（本次改动若直接触及核心库已自动升级触发）。',
 };
 
-export const renderReport = (audit: DiffAudit, tag: string): string => {
+const CHANGE_TIER_ADVICE: Record<DiffTier, string> = {
+  light: '本次增量未改 `src/`：保持轻量门禁，无需额外触发 1 小时 `deep` Mathlib 全量验证。',
+  engine: '本次增量仅涉及构建配置：按 `smoke` 链路验证即可。',
+  runtime: '本次增量触及 C++ 运行时 / Emscripten 适配层：触发 C ABI Diff 与跨端差分门禁。',
+  'lean-core':
+    '本次增量直接修改了 `src/Init` / `src/Std` / `src/Lean`：自动升级触发 `deep` 官方 Mathlib `.olean` 兼容性实弹门禁。',
+};
+
+export const renderReport = (
+  audit: DiffAudit,
+  tag: string,
+  changeAudit?: DiffAudit,
+  baseLabel?: string,
+): string => {
   const lines: string[] = [];
   lines.push(`### 软 Fork Diff 审计（相对上游 ${tag}）`);
   lines.push('');
@@ -129,38 +142,56 @@ export const renderReport = (audit: DiffAudit, tag: string): string => {
     lines.push('`src/` 与上游完全一致。');
     lines.push('');
     lines.push(`**分级：light** — ${TIER_ADVICE.light}`);
-    return `${lines.join('\n')}\n`;
-  }
-  lines.push(
-    `改动 ${audit.totalFiles} 个文件，+${audit.added} / -${audit.deleted}；分级 **${audit.tier}**。`,
-  );
-  lines.push('');
-  lines.push('| 分层 | 文件 | + | - |');
-  lines.push('| --- | --- | --- | --- |');
-  for (const group of audit.groups) {
-    lines.push(`| ${group.layer} | ${group.files.length} | +${group.added} | -${group.deleted} |`);
-  }
-  lines.push('');
-  lines.push(`> ${TIER_ADVICE[audit.tier]}`);
-  lines.push('');
-  lines.push('<details><summary>文件清单</summary>');
-  lines.push('');
-  for (const group of audit.groups) {
-    lines.push(`**${group.layer}**`);
+  } else {
+    lines.push(
+      `改动 ${audit.totalFiles} 个文件，+${audit.added} / -${audit.deleted}；分级 **${audit.tier}**。`,
+    );
     lines.push('');
-    for (const file of group.files) {
-      lines.push(`- \`${file.path}\` +${file.added} / -${file.deleted}`);
+    lines.push('| 分层 | 文件 | + | - |');
+    lines.push('| --- | --- | --- | --- |');
+    for (const group of audit.groups) {
+      lines.push(
+        `| ${group.layer} | ${group.files.length} | +${group.added} | -${group.deleted} |`,
+      );
     }
     lines.push('');
+    lines.push(`> ${TIER_ADVICE[audit.tier]}`);
+    lines.push('');
+    lines.push('<details><summary>文件清单</summary>');
+    lines.push('');
+    for (const group of audit.groups) {
+      lines.push(`**${group.layer}**`);
+      lines.push('');
+      for (const file of group.files) {
+        lines.push(`- \`${file.path}\` +${file.added} / -${file.deleted}`);
+      }
+      lines.push('');
+    }
+    lines.push('</details>');
   }
-  lines.push('</details>');
+
+  if (changeAudit !== undefined) {
+    lines.push('');
+    lines.push(`#### 本次变更增量分级（相对 ${baseLabel ?? 'base'}）`);
+    lines.push('');
+    if (changeAudit.totalFiles === 0) {
+      lines.push(
+        `- \`src/\` 增量改动文件数：**0**，增量分级：**light** — ${CHANGE_TIER_ADVICE.light}`,
+      );
+    } else {
+      lines.push(
+        `- 增量涉及 **${changeAudit.totalFiles}** 个文件（+${changeAudit.added} / -${changeAudit.deleted}），增量分级：**${changeAudit.tier}** — ${CHANGE_TIER_ADVICE[changeAudit.tier]}`,
+      );
+    }
+  }
+
   return `${lines.join('\n')}\n`;
 };
 
-export const readDiff = (repo: string, tag: string): DiffEntry[] => {
+export const readDiffRange = (repo: string, baseRef: string, headRef = 'HEAD'): DiffEntry[] => {
   const stdout = execFileSync(
     'git',
-    ['-C', repo, 'diff', '--numstat', `${tag}..HEAD`, '--', 'src/'],
+    ['-C', repo, 'diff', '--numstat', `${baseRef}..${headRef}`, '--', 'src/'],
     {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
@@ -169,8 +200,11 @@ export const readDiff = (repo: string, tag: string): DiffEntry[] => {
   return parseNumstat(stdout);
 };
 
+export const readDiff = (repo: string, tag: string): DiffEntry[] => readDiffRange(repo, tag);
+
 const SPEC: Record<string, FlagSpec> = {
   tag: { kind: 'string', required: true, valueName: 'v4.36.0' },
+  base: { kind: 'string', valueName: 'baseSha' },
   repo: { kind: 'string', valueName: 'dir' },
   summary: { kind: 'string', valueName: 'file' },
   output: { kind: 'string', valueName: 'file' },
@@ -180,9 +214,12 @@ const SPEC: Record<string, FlagSpec> = {
 const main = (): void => {
   const parsed = parseArgs(process.argv.slice(2), SPEC);
   const tag = requireString(parsed, 'tag');
+  const base = optionalString(parsed, 'base');
   const repo = optionalString(parsed, 'repo') ?? process.cwd();
   const audit = summarizeDiff(readDiff(repo, tag));
-  const report = renderReport(audit, tag);
+  const changeAudit = base === undefined ? undefined : summarizeDiff(readDiffRange(repo, base));
+  const effectiveChange = changeAudit ?? audit;
+  const report = renderReport(audit, tag, changeAudit, base?.slice(0, 12));
   process.stdout.write(report);
   const summary = optionalString(parsed, 'summary');
   if (summary !== undefined) appendFileSync(summary, report);
@@ -190,12 +227,19 @@ const main = (): void => {
   if (output !== undefined) {
     writeFileSync(
       output,
-      [`tier=${audit.tier}`, `lean_core_changed=${audit.tier === 'lean-core'}`].join('\n') + '\n',
+      [
+        `tier=${audit.tier}`,
+        `lean_core_changed=${audit.tier === 'lean-core'}`,
+        `change_tier=${effectiveChange.tier}`,
+        `change_lean_core_changed=${effectiveChange.tier === 'lean-core'}`,
+      ].join('\n') + '\n',
       { flag: 'a' },
     );
   }
   if (parsed.flags.json === true) {
-    process.stdout.write(`${JSON.stringify(audit, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ ...audit, ...(changeAudit ? { change: changeAudit } : {}) }, null, 2)}\n`,
+    );
   }
 };
 

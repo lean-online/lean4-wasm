@@ -1,6 +1,7 @@
 /**
  * Chrome Web Worker 内运行 wasm64 Lean LSP（--worker）。
  * 由 esbuild 打包为 work/dist/lsp-worker.mjs，供 wasm64-browser-harness.ts 启动。
+ * 支持从页面预加载的 SharedArrayBuffer 资产列表和已编译 WebAssembly.Module 直接挂载（零重复下载/编译）。
  */
 
 // V8 默认 Error.stackTraceLimit=10，wasm 爆栈只会留下最顶上 10 帧。
@@ -18,7 +19,7 @@ interface EmscriptenStream {
 interface LeanModule {
   FS: {
     mkdirTree: (path: string) => void;
-    writeFile: (path: string, data: Uint8Array) => void;
+    writeFile: (path: string, data: Uint8Array, options?: { canOwn?: boolean }) => void;
     chdir: (path: string) => void;
     getStream: (fd: number) => EmscriptenStream;
   };
@@ -27,11 +28,18 @@ interface LeanModule {
   callMain: (args: string[]) => number;
 }
 
+interface PreloadedAsset {
+  readonly rel: string;
+  readonly bytes: Uint8Array;
+}
+
 interface WorkerStartMessage {
   readonly type?: 'start';
   readonly leanMjsUrl: string;
   readonly manifestUrl: string;
   readonly libBaseUrl: string;
+  readonly preloadedAssets?: readonly PreloadedAsset[];
+  readonly wasmModule?: WebAssembly.Module;
   readonly stdin: { readonly buffer: SharedArrayBuffer; readonly capacity: number };
   readonly files: Readonly<Record<string, string>>;
   readonly args: readonly string[];
@@ -115,17 +123,36 @@ self.onmessage = async (event: MessageEvent<WorkerInboundMessage>) => {
   }
   try {
     const leanMjsUrl = new URL(data.leanMjsUrl, self.location.href).href;
+    const preloaded = data.preloadedAssets;
+    const precompiledWasm = data.wasmModule;
     const [{ default: createLean }, assets] = await Promise.all([
       import(/* @vite-ignore */ leanMjsUrl) as Promise<{
         default: (options: Record<string, unknown>) => Promise<LeanModule>;
       }>,
-      fetchLibraryAssets(data.manifestUrl, data.libBaseUrl),
+      preloaded
+        ? Promise.resolve(preloaded)
+        : fetchLibraryAssets(data.manifestUrl, data.libBaseUrl),
     ]);
 
     const lean = await createLean({
       noInitialRun: true,
       mainScriptUrlOrBlob: leanMjsUrl,
       locateFile: (name: string) => new URL(`/${name}`, self.location.href).href,
+      ...(precompiledWasm
+        ? {
+            instantiateWasm(
+              imports: WebAssembly.Imports,
+              receive: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
+            ) {
+              void WebAssembly.instantiate(precompiledWasm, imports).then(
+                (instance) => receive(instance, precompiledWasm),
+                (error: unknown) =>
+                  workerSelf.postMessage({ failure: errorStack(error) ?? String(error) }),
+              );
+              return {};
+            },
+          }
+        : {}),
       lspStdin: data.stdin,
       lspProcessExit: (code: number) => workerSelf.postMessage({ exit: code }),
       onMemoryResize: (memoryBytes: number) => workerSelf.postMessage({ memoryBytes }),
@@ -140,10 +167,15 @@ self.onmessage = async (event: MessageEvent<WorkerInboundMessage>) => {
     lean.FS.mkdirTree('/etc');
     lean.FS.writeFile('/etc/localtime', data.timezone);
 
+    const createdDirs = new Set<string>(['/lean/lib/lean']);
     for (const asset of assets) {
       const target = `/lean/lib/lean/${asset.rel}`;
-      lean.FS.mkdirTree(target.slice(0, target.lastIndexOf('/')));
-      lean.FS.writeFile(target, asset.bytes);
+      const dir = target.slice(0, target.lastIndexOf('/'));
+      if (dir && !createdDirs.has(dir)) {
+        lean.FS.mkdirTree(dir);
+        createdDirs.add(dir);
+      }
+      lean.FS.writeFile(target, asset.bytes, { canOwn: Boolean(preloaded) });
     }
 
     const encoder = new TextEncoder();

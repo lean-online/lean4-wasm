@@ -30,11 +30,20 @@ interface EnvironmentReport {
   memory64Shared: string;
 }
 
+interface CrossDiffBrowserOutcome {
+  readonly id: string;
+  readonly diagnostics: readonly LspDiagnostic[];
+  readonly elapsedMs: number;
+  readonly peakMemoryBytes?: number;
+  readonly workerError?: string;
+}
+
 interface ProbeReport {
   ok: boolean;
   stage: string;
   code?: number;
   oleanCount?: number;
+  crossDiffResults?: readonly CrossDiffBrowserOutcome[];
   environment: EnvironmentReport;
   log: string[];
   error?: Record<string, unknown>;
@@ -121,6 +130,7 @@ const FALLBACK_TZIF = Uint8Array.from([
 interface QueryConfig {
   readonly mode: string;
   readonly manifestUrl: string;
+  readonly glueUrl: string;
   readonly moduleName?: string;
   readonly goodCode?: string;
 }
@@ -129,11 +139,13 @@ const readQueryConfig = (): QueryConfig => {
   const params = new URLSearchParams(location.search);
   const mode = params.get('mode') ?? 'auto';
   const manifestUrl = params.get('manifest') ?? '/olean-manifest.json';
+  const glueUrl = params.get('glue') ?? '/lean-adapted-proxy.mjs';
   const moduleName = params.get('module') ?? undefined;
   const goodCode = params.get('good') ?? undefined;
   return {
     mode,
     manifestUrl,
+    glueUrl,
     ...(moduleName ? { moduleName } : {}),
     ...(goodCode ? { goodCode } : {}),
   };
@@ -234,19 +246,26 @@ const initializeParams = {
   capabilities: { textDocument: { publishDiagnostics: {}, synchronization: {} } },
 };
 
+interface PreloadedBundle {
+  readonly assets: ReadonlyArray<{ readonly rel: string; readonly bytes: Uint8Array }>;
+  readonly wasmModule?: WebAssembly.Module;
+}
+
 const runLspDoc = async (
   name: string,
   text: string,
   waitUntilFinal: boolean,
   config: QueryConfig,
   nudgeLine: number,
-): Promise<{ diagnostics: LspDiagnostic[]; elapsedMs: number }> => {
+  preloaded?: PreloadedBundle,
+): Promise<{ diagnostics: LspDiagnostic[]; elapsedMs: number; peakMemoryBytes: number }> => {
   const startedAt = performance.now();
   const uri = `file:///workspace/${name}`;
   const ringBuffer = new SharedArrayBuffer(RING_CONTROL_BYTES + RING_BYTES);
   const writer = new RingWriter(ringBuffer, RING_BYTES);
   const decoder = new FrameDecoder();
   const worker = new Worker('/lsp-worker.mjs', { type: 'module' });
+  let peakMemoryBytes = 0;
 
   // 无进展看门狗：任何消息或输出都算进展并重新计时。Mathlib 加载 import 时
   // 可能长时间没有 publishDiagnostics，但 stderr / progress 通知会持续出现。
@@ -289,6 +308,7 @@ const runLspDoc = async (
           return;
         }
         if (typeof msg.memoryBytes === 'number') {
+          if (msg.memoryBytes > peakMemoryBytes) peakMemoryBytes = msg.memoryBytes;
           const mib = Math.round(msg.memoryBytes / 1048576);
           log.push(`[${name}] memory=${mib}MB`);
           return;
@@ -338,6 +358,9 @@ const runLspDoc = async (
       } else if (msg.ready === true) {
         clearTimeout(timer);
         worker.removeEventListener('message', onReady);
+        if (typeof msg.memoryBytes === 'number' && msg.memoryBytes > peakMemoryBytes) {
+          peakMemoryBytes = msg.memoryBytes;
+        }
         resolve(typeof msg.assets === 'number' ? msg.assets : 0);
       }
     };
@@ -351,9 +374,11 @@ const runLspDoc = async (
   });
 
   worker.postMessage({
-    leanMjsUrl: '/lean-adapted-proxy.mjs',
+    leanMjsUrl: config.glueUrl,
     manifestUrl: config.manifestUrl,
     libBaseUrl: '/lean-lib',
+    ...(preloaded ? { preloadedAssets: preloaded.assets } : {}),
+    ...(preloaded?.wasmModule ? { wasmModule: preloaded.wasmModule } : {}),
     stdin: { buffer: ringBuffer, capacity: RING_BYTES },
     files: { [`/workspace/${name}`]: text },
     args: ['-j4', '--worker', uri],
@@ -411,12 +436,26 @@ const runLspDoc = async (
           return {
             diagnostics: collected.at(-1) ?? [],
             elapsedMs: Math.round(performance.now() - startedAt),
+            peakMemoryBytes,
           };
         }
         const diagnostics = (msg.params?.diagnostics ?? []) as LspDiagnostic[];
         collected.push(diagnostics);
-        if (diagnostics.length > 0) {
-          return { diagnostics, elapsedMs: Math.round(performance.now() - startedAt) };
+        if (waitUntilFinal) {
+          // 期望完整求值时仅遇到 error/warning 才提前结束；info（#eval 输出）需等到 ileanInfoFinal 收齐。
+          if (diagnostics.some((d) => (d.severity ?? 1) <= 2)) {
+            return {
+              diagnostics,
+              elapsedMs: Math.round(performance.now() - startedAt),
+              peakMemoryBytes,
+            };
+          }
+        } else if (diagnostics.length > 0) {
+          return {
+            diagnostics,
+            elapsedMs: Math.round(performance.now() - startedAt),
+            peakMemoryBytes,
+          };
         }
       }
     } finally {
@@ -506,6 +545,93 @@ const runDepthMode = async (environment: EnvironmentReport, config: QueryConfig)
   });
 };
 
+interface CrossDiffInputCase {
+  readonly id: string;
+  readonly fileName: string;
+  readonly code: string;
+  readonly expectOk: boolean;
+}
+
+const preloadBundle = async (config: QueryConfig): Promise<PreloadedBundle> => {
+  const manifestRes = await fetch(config.manifestUrl);
+  if (!manifestRes.ok) {
+    throw new Error(`cross-diff manifest 加载失败 (${config.manifestUrl}): ${manifestRes.status}`);
+  }
+  const files = (await manifestRes.json()) as string[];
+  const assets = new Array<{ rel: string; bytes: Uint8Array }>(files.length);
+  let cursor = 0;
+  const fetchTask = async (): Promise<void> => {
+    while (cursor < files.length) {
+      const idx = cursor;
+      cursor += 1;
+      const rel = files[idx];
+      if (!rel) continue;
+      const res = await fetch(`/lean-lib/${rel}`);
+      if (!res.ok) throw new Error(`olean 加载失败 ${rel}: ${res.status}`);
+      const raw = new Uint8Array(await res.arrayBuffer());
+      // SharedArrayBuffer 视图允许多个 Worker 零拷贝共享 olean 字节，免去 20+ 次整库复制。
+      const shared = new Uint8Array(new SharedArrayBuffer(raw.byteLength));
+      shared.set(raw);
+      assets[idx] = { rel, bytes: shared };
+    }
+  };
+  let wasmModule: WebAssembly.Module | undefined;
+  const compileWasm = async (): Promise<void> => {
+    try {
+      wasmModule = await WebAssembly.compileStreaming(fetch('/lean-lsp.wasm'));
+    } catch {
+      const res = await fetch('/lean-lsp.wasm');
+      if (res.ok) wasmModule = await WebAssembly.compile(await res.arrayBuffer());
+    }
+  };
+  await Promise.all([
+    compileWasm(),
+    ...Array.from({ length: Math.min(FETCH_CONCURRENCY, Math.max(1, files.length)) }, fetchTask),
+  ]);
+  log.push(`cross-diff preloaded assets=${assets.length} wasm=${String(Boolean(wasmModule))}`);
+  return { assets, ...(wasmModule ? { wasmModule } : {}) };
+};
+
+const runCrossDiffMode = async (
+  environment: EnvironmentReport,
+  config: QueryConfig,
+): Promise<void> => {
+  const res = await fetch('/cross-diff-cases.json');
+  if (!res.ok) throw new Error(`cross-diff-cases.json 加载失败: ${res.status}`);
+  const cases = (await res.json()) as CrossDiffInputCase[];
+  const preloaded = await preloadBundle(config);
+  const results: CrossDiffBrowserOutcome[] = [];
+
+  for (const item of cases) {
+    const started = performance.now();
+    try {
+      const out = await runLspDoc(item.fileName, item.code, true, config, 0, preloaded);
+      results.push({
+        id: item.id,
+        diagnostics: out.diagnostics,
+        elapsedMs: out.elapsedMs,
+        peakMemoryBytes: out.peakMemoryBytes,
+      });
+    } catch (error: unknown) {
+      results.push({
+        id: item.id,
+        diagnostics: [],
+        elapsedMs: Math.round(performance.now() - started),
+        workerError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  finish({
+    ok: results.every((entry) => entry.workerError === undefined),
+    stage: 'cross-diff',
+    code: results.every((entry) => entry.workerError === undefined) ? 0 : 1,
+    crossDiffResults: results,
+    environment,
+    log,
+  });
+};
+
 const run = async (): Promise<void> => {
   const environment = readEnvironment();
   const config = readQueryConfig();
@@ -521,6 +647,10 @@ const run = async (): Promise<void> => {
     }
     if (mode === 'depth') {
       await runDepthMode(environment, config);
+      return;
+    }
+    if (mode === 'cross-diff') {
+      await runCrossDiffMode(environment, config);
       return;
     }
     // 用变量持有 URL，避免打包阶段把 /lean.mjs 解析成模块依赖。
